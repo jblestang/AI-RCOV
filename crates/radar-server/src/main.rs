@@ -1055,22 +1055,22 @@ fn render_count_tile(
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let mut output = vec![0u8; TILE_SIZE * TILE_SIZE];
+    let tile_source_x = col * TILE_SIZE * factor;
+    let tile_source_y = row * TILE_SIZE * factor;
+    let source_width = (TILE_SIZE * factor).min(width.saturating_sub(tile_source_x));
+    let mut line = vec![0u8; source_width];
     for ty in 0..TILE_SIZE {
-        for tx in 0..TILE_SIZE {
-            let source_x = (col * TILE_SIZE + tx) * factor;
-            let source_y = (row * TILE_SIZE + ty) * factor;
-            if source_x >= width || source_y >= height {
-                continue;
+        let source_y = tile_source_y + ty * factor;
+        if source_y >= height || source_width == 0 {
+            break;
+        }
+        for sy in source_y..(source_y + factor).min(height) {
+            file.seek(SeekFrom::Start((sy * width + tile_source_x) as u64))?;
+            file.read_exact(&mut line)?;
+            for (tx, values) in line.chunks(factor).enumerate() {
+                output[ty * TILE_SIZE + tx] =
+                    output[ty * TILE_SIZE + tx].max(values.iter().copied().max().unwrap_or(0));
             }
-            let mut max = 0;
-            for sy in source_y..(source_y + factor).min(height) {
-                let offset = sy * width + source_x;
-                file.seek(SeekFrom::Start(offset as u64))?;
-                let mut line = vec![0u8; (source_x + factor).min(width) - source_x];
-                file.read_exact(&mut line)?;
-                max = max.max(line.into_iter().max().unwrap_or(0));
-            }
-            output[ty * TILE_SIZE + tx] = max
         }
     }
     grayscale_png(&output).map_err(std::io::Error::other)
@@ -1086,27 +1086,32 @@ fn render_minimum_tile(
     use std::io::{Read, Seek, SeekFrom};
     let mut file = std::fs::File::open(path)?;
     let mut output = vec![0u8; TILE_SIZE * TILE_SIZE];
+    let tile_source_x = col * TILE_SIZE * factor;
+    let tile_source_y = row * TILE_SIZE * factor;
+    let source_width = (TILE_SIZE * factor).min(width.saturating_sub(tile_source_x));
+    let mut line = vec![0u8; source_width * 2];
+    let mut minimum = vec![u16::MAX; TILE_SIZE];
     for ty in 0..TILE_SIZE {
-        for tx in 0..TILE_SIZE {
-            let sx = (col * TILE_SIZE + tx) * factor;
-            let sy = (row * TILE_SIZE + ty) * factor;
-            if sx >= width || sy >= height {
-                continue;
-            }
-            let mut minimum = u16::MAX;
-            for y in sy..(sy + factor).min(height) {
-                file.seek(SeekFrom::Start(((y * width + sx) * 2) as u64))?;
-                let mut line = vec![0u8; ((sx + factor).min(width) - sx) * 2];
-                file.read_exact(&mut line)?;
-                for pair in line.as_chunks::<2>().0 {
+        let source_y = tile_source_y + ty * factor;
+        if source_y >= height || source_width == 0 {
+            break;
+        }
+        minimum.fill(u16::MAX);
+        for y in source_y..(source_y + factor).min(height) {
+            file.seek(SeekFrom::Start(((y * width + tile_source_x) * 2) as u64))?;
+            file.read_exact(&mut line)?;
+            for (tx, values) in line.as_chunks::<2>().0.chunks(factor).enumerate() {
+                for pair in values {
                     let value = u16::from_le_bytes(*pair);
                     if value != u16::MAX {
-                        minimum = minimum.min(value)
+                        minimum[tx] = minimum[tx].min(value);
                     }
                 }
             }
-            if minimum != u16::MAX {
-                output[ty * TILE_SIZE + tx] = (minimum / 257) as u8
+        }
+        for (tx, value) in minimum.iter().enumerate() {
+            if *value != u16::MAX {
+                output[ty * TILE_SIZE + tx] = (*value / 257) as u8;
             }
         }
     }

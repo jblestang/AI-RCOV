@@ -9,9 +9,11 @@ LONGITUDE="${RADIAL_LONGITUDE:-2.2}"
 RANGE_M="${RADIAL_RANGE_M:-20000}"
 RESOLUTION_M="${RADIAL_RESOLUTION_M:-180}"
 TIMEOUT_SECONDS="${RADIAL_TIMEOUT_SECONDS:-300}"
+TILE_CONCURRENCY="${RADIAL_TILE_CONCURRENCY:-8}"
 RADAR_ID="${RADIAL_RADAR_ID:-11111111-1111-4111-8111-111111111111}"
 
 for command in curl jq od; do command -v "$command" >/dev/null || { echo "Commande requise absente: $command" >&2; exit 2; }; done
+[[ "$TILE_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] || { echo "RADIAL_TILE_CONCURRENCY doit être un entier positif" >&2; exit 2; }
 mkdir -p "$OUTPUT_DIR"
 
 echo "[1/7] Attente du serveur $API_URL"
@@ -50,21 +52,58 @@ grep -q '<Capabilities' "$OUTPUT_DIR/WMTSCapabilities.xml"
 width=$(jq -er '.metadata.width' "$OUTPUT_DIR/metadata.json")
 height=$(jq -er '.metadata.height' "$OUTPUT_DIR/metadata.json")
 
-echo "[6/7] Téléchargement des couches PNG"
-layers=(ground agl-30m agl-50m agl-100m "agl-${TARGET_AGL_M}m" min-detection-height radar-count)
+echo "[6/7] Téléchargement de la pyramide PNG complète"
+layers=()
+for candidate in ground agl-30m agl-50m agl-100m "agl-${TARGET_AGL_M}m" min-detection-height radar-count; do
+  [[ " ${layers[*]:-} " == *" $candidate "* ]] || layers+=("$candidate")
+done
+max_size=$width
+(( height > max_size )) && max_size=$height
+levels=1
+while (( max_size > 256 )); do max_size=$(( (max_size + 1) / 2 )); levels=$((levels + 1)); done
+: >"$OUTPUT_DIR/tile-matrices.tsv"
+tile_count=0
+pids=()
+download_tile() {
+  local layer=$1 z=$2 row=$3 col=$4 destination=$5
+  curl -fsS "$base/$layer/$z/$row/$col.png" -o "$destination"
+  local signature
+  signature=$(od -An -tx1 -N8 "$destination" | tr -d ' \n')
+  [[ "$signature" == 89504e470d0a1a0a ]]
+}
+for ((z=0; z<levels; z++)); do
+  factor=$((1 << (levels - 1 - z)))
+  span=$((256 * factor))
+  matrix_width=$(( (width + span - 1) / span ))
+  matrix_height=$(( (height + span - 1) / span ))
+  printf '%s\t%s\t%s\t%s\n' "$z" "$factor" "$matrix_width" "$matrix_height" >>"$OUTPUT_DIR/tile-matrices.tsv"
+  echo "      LOD $z: ${matrix_width}x${matrix_height} tuiles, facteur $factor"
+  for layer in "${layers[@]}"; do
+    directory="$OUTPUT_DIR/tiles/$layer/$z"
+    mkdir -p "$directory"
+    for ((row=0; row<matrix_height; row++)); do
+      for ((col=0; col<matrix_width; col++)); do
+        download_tile "$layer" "$z" "$row" "$col" "$directory/${row}-${col}.png" &
+        pids+=("$!")
+        tile_count=$((tile_count + 1))
+        if (( ${#pids[@]} >= TILE_CONCURRENCY )); then
+          for pid in "${pids[@]}"; do wait "$pid"; done
+          pids=()
+        fi
+      done
+    done
+  done
+done
+for pid in "${pids[@]}"; do wait "$pid"; done
 for layer in "${layers[@]}"; do
-  png="$OUTPUT_DIR/${layer}.png"
-  headers="$OUTPUT_DIR/${layer}.headers"
-  curl -fsS -D "$headers" "$base/$layer/0/0/0.png" -o "$png"
-  signature=$(od -An -tx1 -N8 "$png" | tr -d ' \n')
-  [[ "$signature" == 89504e470d0a1a0a ]] || { echo "Signature PNG invalide: $layer" >&2; exit 1; }
+  curl -fsS -D "$OUTPUT_DIR/${layer}.headers" "$base/$layer/0/0/0.png" -o "$OUTPUT_DIR/${layer}.png"
 done
 
 cat >"$OUTPUT_DIR/preview.html" <<HTML
 <!doctype html><meta charset="utf-8"><title>Radial validation</title>
 <style>body{font:14px system-ui;background:#071116;color:#e9f1f4;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}.card{background:#10232b;border:1px solid #29444e;border-radius:12px;padding:14px}canvas{display:block;width:256px;height:256px;background:#08151a;border:1px solid #34505b;image-rendering:pixelated;margin:auto}</style>
-<h1>Radial · aperçu ${width} × ${height}</h1><p>Les canevas recadrent les pixels non nuls des tuiles WMTS brutes.</p><main id="cards"></main>
-<script>const layers=['ground','agl-30m','agl-50m','agl-100m','agl-${TARGET_AGL_M}m','min-detection-height','radar-count'];for(const name of layers){const card=document.createElement('section');card.className='card';const title=document.createElement('h2');title.textContent=name;const canvas=document.createElement('canvas');canvas.width=canvas.height=256;card.append(title,canvas);cards.append(card);const image=new Image();image.src=name+'.png';image.onload=()=>{const scratch=document.createElement('canvas');scratch.width=scratch.height=256;const source=scratch.getContext('2d');source.drawImage(image,0,0);const data=source.getImageData(0,0,256,256).data;let a=256,b=256,c=-1,d=-1;for(let y=0;y<256;y++)for(let x=0;x<256;x++){const i=(y*256+x)*4;if(data[i]||data[i+1]||data[i+2]){a=Math.min(a,x);b=Math.min(b,y);c=Math.max(c,x);d=Math.max(d,y)}}const out=canvas.getContext('2d');out.imageSmoothingEnabled=false;if(c<0){out.drawImage(image,0,0);return}const w=c-a+1,h=d-b+1,scale=Math.min(236/w,236/h);out.drawImage(image,a,b,w,h,(256-w*scale)/2,(256-h*scale)/2,w*scale,h*scale)}};</script>
+<h1>Radial · pyramide ${width} × ${height}</h1><p>${levels} LOD, ${tile_count} tuiles téléchargées. Chaque carte montre la tuile row 0 / col 0 du LOD.</p><main id="cards"></main>
+<script>const layers='${layers[*]}'.split(' ');const levels=${levels};for(const name of layers)for(let z=0;z<levels;z++){const card=document.createElement('section');card.className='card';const title=document.createElement('h2');title.textContent=name+' · LOD '+z;const image=new Image();image.src='tiles/'+name+'/'+z+'/0-0.png';card.append(title,image);cards.append(card);}</script>
 HTML
 
 echo "[7/7] Validation ETag / 304"
@@ -76,6 +115,6 @@ code=$(curl -sS -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" "$base/
 echo "VALIDATION OK"
 echo "Job: $job_id"
 echo "Dataset: $dataset_id"
-echo "PNG: $OUTPUT_DIR"
-echo "Grille source: ${width}x${height} pixels dans une tuile WMTS 256x256"
-echo "Aperçu recadré: $OUTPUT_DIR/preview.html"
+echo "Pyramide PNG: $tile_count tuiles, $levels LOD dans $OUTPUT_DIR/tiles"
+echo "Matrices: $OUTPUT_DIR/tile-matrices.tsv"
+echo "Aperçu par LOD: $OUTPUT_DIR/preview.html"

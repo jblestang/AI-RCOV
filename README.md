@@ -89,9 +89,13 @@ RADIAL_API_URL=http://127.0.0.1:8100 scripts/validate-e2e.sh
 
 Le script attend health/readiness, crée un radar, déclenche le téléchargement
 SRTM et le LOS, attend le job, crée une fusion, télécharge metadata et
-GetCapabilities, puis sauvegarde et vérifie les PNG `ground`, `agl-30m`,
+GetCapabilities, puis sauvegarde et vérifie la pyramide complète de PNG `ground`, `agl-30m`,
 `agl-50m`, `agl-100m`, hauteur personnalisée (75 m par défaut),
-`min-detection-height` et `radar-count`. Il vérifie également ETag/304.
+`min-detection-height` et `radar-count` pour tous les LOD, lignes et colonnes.
+Les tuiles sont rangées sous `validation-output/tiles/<layer>/<z>/` et la
+géométrie des matrices est écrite dans `tile-matrices.tsv`. Il vérifie également
+ETag/304. `RADIAL_TILE_CONCURRENCY` borne les téléchargements parallèles (8 par
+défaut).
 
 Les requêtes strictement identiques sont idempotentes. Tant que le serveur reste
 actif, un second `POST /jobs` renvoie le job existant. Les artefacts LOS sont

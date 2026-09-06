@@ -67,6 +67,9 @@ multi-architecture server images to GHCR.
 Terrain identity now hashes coordinates, dimensions and every decoded elevation
 sample in stable tile order. Regression tests also cover unknown format versions,
 incorrect magic, odd LOD dimensions, XML escaping and PNG signatures.
+The end-to-end validator enumerates every advertised matrix dimension and
+downloads every row/column for every standard and requested AGL layer with
+bounded concurrency; its HTML preview exposes one sample tile per LOD.
 The dependency-free standalone benchmark now imports the production LOS modules,
 generates minimum heights, merges bitsets, reports geometry/surface/memory/hash,
 and was actually executed at 400 km / 90 m. One local iteration measured 2.852 s
