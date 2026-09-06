@@ -103,10 +103,11 @@ aussi indexés sur disque par la requête complète et validés par checksum apr
 un redémarrage. Une fusion de la même sélection à la même hauteur réutilise le
 même identifiant et le même dataset WMTS persistant.
 
-Les PNG sont des tuiles WMTS brutes : une petite grille de test occupe
-normalement le coin supérieur gauche de la tuile 256 × 256. Le script génère
-aussi `preview.html`, qui détecte la zone non nulle, la centre et l'agrandit pour
-inspection. Les résultats sont placés dans `validation-output/`.
+Les PNG sont des tuiles WMTS brutes. Le script génère aussi `preview.html`, un
+visualiseur qui assemble à la demande les tuiles visibles : sélection de couche
+et de LOD, zoom à la molette ou avec les boutons, déplacement souris/tactile,
+recentrage et grille optionnelle. Les résultats sont placés dans
+`validation-output/`.
 
 Pour un essai rapide :
 

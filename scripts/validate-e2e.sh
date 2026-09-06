@@ -63,6 +63,7 @@ levels=1
 while (( max_size > 256 )); do max_size=$(( (max_size + 1) / 2 )); levels=$((levels + 1)); done
 : >"$OUTPUT_DIR/tile-matrices.tsv"
 tile_count=0
+matrix_specs=""
 pids=""
 active_downloads=0
 download_tile() {
@@ -77,6 +78,7 @@ for ((z=0; z<levels; z++)); do
   span=$((256 * factor))
   matrix_width=$(( (width + span - 1) / span ))
   matrix_height=$(( (height + span - 1) / span ))
+  matrix_specs="${matrix_specs}[$z,$factor,$matrix_width,$matrix_height],"
   printf '%s\t%s\t%s\t%s\n' "$z" "$factor" "$matrix_width" "$matrix_height" >>"$OUTPUT_DIR/tile-matrices.tsv"
   echo "      LOD $z: ${matrix_width}x${matrix_height} tuiles, facteur $factor"
   for layer in "${layers[@]}"; do
@@ -103,10 +105,22 @@ for layer in "${layers[@]}"; do
 done
 
 cat >"$OUTPUT_DIR/preview.html" <<HTML
-<!doctype html><meta charset="utf-8"><title>Radial validation</title>
-<style>body{font:14px system-ui;background:#071116;color:#e9f1f4;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:18px}.card{background:#10232b;border:1px solid #29444e;border-radius:12px;padding:14px}canvas{display:block;width:256px;height:256px;background:#08151a;border:1px solid #34505b;image-rendering:pixelated;margin:auto}</style>
-<h1>Radial · pyramide ${width} × ${height}</h1><p>${levels} LOD, ${tile_count} tuiles téléchargées. Chaque carte montre la tuile row 0 / col 0 du LOD.</p><main id="cards"></main>
-<script>const layers='${layers[*]}'.split(' ');const levels=${levels};for(const name of layers)for(let z=0;z<levels;z++){const card=document.createElement('section');card.className='card';const title=document.createElement('h2');title.textContent=name+' · LOD '+z;const image=new Image();image.src='tiles/'+name+'/'+z+'/0-0.png';card.append(title,image);cards.append(card);}</script>
+<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Radial · pyramide WMTS</title>
+<style>*{box-sizing:border-box}html,body{height:100%;margin:0}body{display:grid;grid-template-rows:auto 1fr;background:#071116;color:#e9f1f4;font:14px system-ui}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;background:#10232b;border-bottom:1px solid #29444e}.brand{font-weight:750;color:#9fe8d7;margin-right:8px}label{display:flex;align-items:center;gap:6px}select,button{color:#e9f1f4;background:#18313a;border:1px solid #42606b;border-radius:6px;padding:6px 9px}button{cursor:pointer}.status{margin-left:auto;color:#9bb4bd}main{position:relative;min-height:0;overflow:hidden}canvas{display:block;width:100%;height:100%;background:#08151a;cursor:grab;touch-action:none;image-rendering:pixelated}canvas.dragging{cursor:grabbing}.help{position:absolute;left:12px;bottom:12px;padding:7px 10px;border-radius:6px;background:#071116cc;color:#9bb4bd;pointer-events:none}</style>
+<body><header class="toolbar"><span class="brand">RADIAL WMTS</span><label>Couche <select id="layer"></select></label><label>LOD <select id="lod"></select></label><button id="minus" title="Zoom arrière">−</button><button id="plus" title="Zoom avant">+</button><button id="fit">Ajuster</button><label><input id="grid" type="checkbox" checked> Grille des tuiles</label><span class="status" id="status"></span></header><main id="viewport"><canvas id="map"></canvas><div class="help">Molette : zoom · Glisser : déplacer · [ / ] : changer de LOD</div></main>
+<script>
+const layers='${layers[*]}'.split(' '), matrices=[${matrix_specs%,}], sourceWidth=${width}, sourceHeight=${height}, totalTiles=${tile_count};
+const canvas=document.getElementById('map'),ctx=canvas.getContext('2d'),layerSelect=document.getElementById('layer'),lodSelect=document.getElementById('lod'),status=document.getElementById('status'),images=new Map();
+let lod=matrices.length-1,layer=layers[0],zoom=1,offsetX=0,offsetY=0,drag=null;
+for(const name of layers)layerSelect.add(new Option(name,name));for(const matrix of matrices)lodSelect.add(new Option('LOD '+matrix[0]+' · '+matrix[2]+'×'+matrix[3]+' · facteur '+matrix[1],matrix[0]));lodSelect.value=lod;
+function matrix(){return matrices[lod]}function resize(){const dpr=devicePixelRatio||1,w=canvas.clientWidth,h=canvas.clientHeight;if(canvas.width!==Math.round(w*dpr)||canvas.height!==Math.round(h*dpr)){canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr)}draw()}
+function fit(){const m=matrix(),w=m[2]*256,h=m[3]*256;zoom=Math.min(canvas.clientWidth/w,canvas.clientHeight/h)*.96;offsetX=(canvas.clientWidth-w*zoom)/2;offsetY=(canvas.clientHeight-h*zoom)/2;draw()}
+function tileImage(row,col){const key=layer+'/'+lod+'/'+row+'-'+col;if(!images.has(key)){const image=new Image();image.onload=draw;image.src='tiles/'+key+'.png';images.set(key,image)}return images.get(key)}
+function draw(){const dpr=devicePixelRatio||1,m=matrix(),cw=canvas.clientWidth,ch=canvas.clientHeight;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,cw,ch);const firstCol=Math.max(0,Math.floor(-offsetX/(256*zoom))),lastCol=Math.min(m[2]-1,Math.floor((cw-offsetX)/(256*zoom))),firstRow=Math.max(0,Math.floor(-offsetY/(256*zoom))),lastRow=Math.min(m[3]-1,Math.floor((ch-offsetY)/(256*zoom)));ctx.imageSmoothingEnabled=false;ctx.setTransform(dpr*zoom,0,0,dpr*zoom,dpr*offsetX,dpr*offsetY);for(let row=firstRow;row<=lastRow;row++)for(let col=firstCol;col<=lastCol;col++){const image=tileImage(row,col);if(image.complete&&image.naturalWidth)ctx.drawImage(image,col*256,row*256);if(document.getElementById('grid').checked){ctx.strokeStyle='#45d4b8aa';ctx.lineWidth=1/zoom;ctx.strokeRect(col*256,row*256,256,256)}}ctx.setTransform(dpr,0,0,dpr,0,0);status.textContent=sourceWidth+'×'+sourceHeight+' · '+matrices.length+' LOD · '+totalTiles+' PNG · zoom '+Math.round(zoom*100)+'%'}
+function zoomAt(factor,x,y){const next=Math.max(.01,Math.min(64,zoom*factor));offsetX=x-(x-offsetX)*next/zoom;offsetY=y-(y-offsetY)*next/zoom;zoom=next;draw()}
+canvas.addEventListener('wheel',event=>{event.preventDefault();const rect=canvas.getBoundingClientRect();zoomAt(Math.exp(-event.deltaY*.0015),event.clientX-rect.left,event.clientY-rect.top)},{passive:false});canvas.addEventListener('pointerdown',event=>{canvas.setPointerCapture(event.pointerId);drag=[event.clientX,event.clientY,offsetX,offsetY];canvas.classList.add('dragging')});canvas.addEventListener('pointermove',event=>{if(drag){offsetX=drag[2]+event.clientX-drag[0];offsetY=drag[3]+event.clientY-drag[1];draw()}});canvas.addEventListener('pointerup',()=>{drag=null;canvas.classList.remove('dragging')});canvas.addEventListener('pointercancel',()=>{drag=null;canvas.classList.remove('dragging')});
+layerSelect.onchange=()=>{layer=layerSelect.value;draw()};lodSelect.onchange=()=>{lod=Number(lodSelect.value);fit()};document.getElementById('grid').onchange=draw;document.getElementById('minus').onclick=()=>zoomAt(.5,canvas.clientWidth/2,canvas.clientHeight/2);document.getElementById('plus').onclick=()=>zoomAt(2,canvas.clientWidth/2,canvas.clientHeight/2);document.getElementById('fit').onclick=fit;addEventListener('keydown',event=>{if(event.key==='['&&lod>0){lod--;lodSelect.value=lod;fit()}if(event.key===']'&&lod<matrices.length-1){lod++;lodSelect.value=lod;fit()}});new ResizeObserver(resize).observe(document.getElementById('viewport'));resize();fit();
+</script></body></html>
 HTML
 
 echo "[7/7] Validation ETag / 304"
