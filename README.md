@@ -106,8 +106,8 @@ même identifiant et le même dataset WMTS persistant.
 Les PNG sont des tuiles WMTS brutes. Le script génère aussi `preview.html`, un
 visualiseur qui assemble à la demande les tuiles visibles : sélection de couche
 et de LOD, zoom à la molette ou avec les boutons, déplacement souris/tactile,
-recentrage et grille optionnelle. Les résultats sont placés dans
-`validation-output/`.
+recentrage, grille optionnelle et marqueur du radar avec ses coordonnées. Les
+résultats sont placés dans `validation-output/`.
 
 Pour un essai rapide :
 
