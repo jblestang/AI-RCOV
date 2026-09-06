@@ -63,6 +63,12 @@ multi-architecture server images to GHCR.
 Terrain identity now hashes coordinates, dimensions and every decoded elevation
 sample in stable tile order. Regression tests also cover unknown format versions,
 incorrect magic, odd LOD dimensions, XML escaping and PNG signatures.
+The dependency-free standalone benchmark now imports the production LOS modules,
+generates minimum heights, merges bitsets, reports geometry/surface/memory/hash,
+and was actually executed at 400 km / 90 m. One local iteration measured 2.852 s
+(27.71 M nominal cells-radar/s), 95,770 visible cells and deterministic hash
+`fc7e022d262c6e91`; this is an observation, not a universal baseline or claimed
+speedup.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -72,6 +78,6 @@ void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: reusable workspace pool and internal sector
 parallelism for one or two radars, live WMTS map/profile widgets, deeper
-integration/property tests, and production benchmark baselines. A 400 km / 30 m
-run was not attempted because it requires roughly 711 million cells and must be
-guarded by the future memory scheduler.
+integration/property tests, and repeated multi-scenario benchmark baselines. A
+400 km / 30 m run was not attempted because it requires roughly 711 million
+cells and several GiB for the standalone synthetic grid.

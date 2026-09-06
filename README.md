@@ -49,6 +49,11 @@ RADAR_BENCH_CELL_M=90 /tmp/radial-bench
 cargo run -p radar-server
 ```
 
+The benchmark imports the production scientific source directly and therefore
+cannot silently diverge into a second LOS implementation. On the development
+machine, one 400 km / 90 m iteration completed in 2.852 s with hash
+`fc7e022d262c6e91`; compare performance only with repeated runs on the same CPU.
+
 The server listens on `RADAR_BIND` (`0.0.0.0:8080` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
