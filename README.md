@@ -93,7 +93,12 @@ GetCapabilities, puis sauvegarde et vérifie les PNG `ground`, `agl-30m`,
 `agl-50m`, `agl-100m`, hauteur personnalisée (75 m par défaut),
 `min-detection-height` et `radar-count`. Il vérifie également ETag/304.
 
-Les résultats sont placés dans `validation-output/`. Pour un essai rapide :
+Les PNG sont des tuiles WMTS brutes : une petite grille de test occupe
+normalement le coin supérieur gauche de la tuile 256 × 256. Le script génère
+aussi `preview.html`, qui détecte la zone non nulle, la centre et l'agrandit pour
+inspection. Les résultats sont placés dans `validation-output/`.
+
+Pour un essai rapide :
 
 ```sh
 RADIAL_API_URL=http://127.0.0.1:8100 \
