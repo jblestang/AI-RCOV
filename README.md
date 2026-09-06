@@ -53,6 +53,12 @@ The server listens on `RADAR_BIND` (`0.0.0.0:8080` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
 
+Set the repository variable `RADAR_API_URL` to the public HTTPS server origin
+before enabling GitHub Pages. The Pages workflow injects it into the runtime
+meta tag and packages the Rust-generated WebAssembly. The container workflow
+publishes `linux/amd64` and `linux/arm64` images to GHCR on `main` and version
+tags.
+
 ## Deployment
 
 `docker compose up --build` starts the native server. Persistent terrain and

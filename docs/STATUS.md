@@ -54,6 +54,11 @@ target height, obstruction flags, vertical margin, first obstacle and final
 visibility. Targets outside radar range are rejected. HTTP CORS now uses an
 explicit `RADAR_CORS_ORIGINS` allow-list, and UUID correlation IDs are created,
 traced and propagated in responses.
+The web crate now has a real `wasm-bindgen` entry point, honours compile-time or
+runtime API origin configuration, and checks server health through browser
+`fetch`; it contains no terrain or LOS dependency. CI compiles the wasm target.
+Separate workflows package/deploy it to GitHub Pages and publish non-root
+multi-architecture server images to GHCR.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -62,7 +67,7 @@ SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one or two radars, browser map,
-integration/property tests, and production benchmark baselines. A 400 km / 30 m
+pool and internal sector parallelism for one or two radars, full interactive map
+bindings, integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be
 guarded by the future memory scheduler.
