@@ -28,8 +28,10 @@ the core.
 
 - `coverage-core`: dependency-free LOS, clipped rings, angular bins, profiles,
   bitsets and fusion.
-- `terrain-srtm`: strict SRTM-1/SRTM-3 HGT decoding and immutable shared mosaics.
-- `coverage-storage`: versioned atomic `.rcov` / `.rhgt` envelopes.
+- `terrain-srtm`: bounded SRTM downloading, two-level cache, strict
+  SRTM-1/SRTM-3 HGT decoding and immutable shared mosaics.
+- `coverage-storage`: versioned atomic `.rcov` / `.rhgt` envelopes and
+  block-streamed height fusion.
 - `radar-api`: shared JSON contracts.
 - `radar-wmts`: semantic LOD reducers, PNG and ETag primitives.
 - `radar-server`: bounded HTTP entry point.
@@ -60,4 +62,3 @@ production. Immutable WMTS URLs include dataset/version/date, enabling one-year
 cache headers without stale overwrites.
 
 Dual licensed under MIT or Apache-2.0.
-

@@ -6,4 +6,6 @@ license.workspace=true
 [dependencies]
 flate2.workspace=true
 thiserror.workspace=true
-
+reqwest.workspace=true
+tokio.workspace=true
+futures.workspace=true

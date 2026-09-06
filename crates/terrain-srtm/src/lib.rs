@@ -1,4 +1,6 @@
 use std::{collections::BTreeMap, io::Read, sync::Arc};
+mod cache;
+pub use cache::{SrtmCache, SrtmCacheConfig};
 pub const VOID: i16 = -32768;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TileCoordinate {
@@ -25,6 +27,10 @@ pub enum TerrainError {
     Io(#[from] std::io::Error),
     #[error("missing terrain tile {0:?}")]
     Missing(TileCoordinate),
+    #[error("network: {0}")]
+    Network(String),
+    #[error("download exceeded configured size")]
+    TooLarge,
 }
 impl HgtTile {
     pub fn decode(coordinate: TileCoordinate, bytes: &[u8]) -> Result<Self, TerrainError> {
@@ -75,6 +81,12 @@ impl TerrainMosaic {
             .get(&c)
             .map(Arc::as_ref)
             .ok_or(TerrainError::Missing(c))
+    }
+    pub fn len(&self) -> usize {
+        self.tiles.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.tiles.is_empty()
     }
 }
 const _: fn() = || {
