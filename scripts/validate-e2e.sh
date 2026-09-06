@@ -63,7 +63,8 @@ levels=1
 while (( max_size > 256 )); do max_size=$(( (max_size + 1) / 2 )); levels=$((levels + 1)); done
 : >"$OUTPUT_DIR/tile-matrices.tsv"
 tile_count=0
-pids=()
+pids=""
+active_downloads=0
 download_tile() {
   local layer=$1 z=$2 row=$3 col=$4 destination=$5
   curl -fsS "$base/$layer/$z/$row/$col.png" -o "$destination"
@@ -84,17 +85,19 @@ for ((z=0; z<levels; z++)); do
     for ((row=0; row<matrix_height; row++)); do
       for ((col=0; col<matrix_width; col++)); do
         download_tile "$layer" "$z" "$row" "$col" "$directory/${row}-${col}.png" &
-        pids+=("$!")
+        pids="$pids $!"
+        active_downloads=$((active_downloads + 1))
         tile_count=$((tile_count + 1))
-        if (( ${#pids[@]} >= TILE_CONCURRENCY )); then
-          for pid in "${pids[@]}"; do wait "$pid"; done
-          pids=()
+        if (( active_downloads >= TILE_CONCURRENCY )); then
+          for pid in $pids; do wait "$pid"; done
+          pids=""
+          active_downloads=0
         fi
       done
     done
   done
 done
-for pid in "${pids[@]}"; do wait "$pid"; done
+for pid in $pids; do wait "$pid"; done
 for layer in "${layers[@]}"; do
   curl -fsS -D "$OUTPUT_DIR/${layer}.headers" "$base/$layer/0/0/0.png" -o "$OUTPUT_DIR/${layer}.png"
 done
