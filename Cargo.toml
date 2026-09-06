@@ -1,0 +1,42 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/coverage-core",
+  "crates/terrain-srtm",
+  "crates/coverage-storage",
+  "crates/radar-api",
+  "crates/radar-wmts",
+  "crates/radar-server",
+  "crates/radar-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/example/radial"
+rust-version = "1.80"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+axum = "0.8"
+blake3 = "1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
+futures = "0.3"
+http = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+parking_lot = "0.12"
+rayon = "1.10"
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["serde", "v4"] }
+

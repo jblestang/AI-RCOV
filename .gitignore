@@ -1,0 +1,6 @@
+/target
+/data
+/dist
+*.tmp
+.DS_Store
+

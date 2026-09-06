@@ -1,0 +1,12 @@
+services:
+  radial:
+    build: .
+    environment:
+      RADAR_BIND: 0.0.0.0:8080
+      RUST_LOG: radar_server=info
+    ports: ["8080:8080"]
+    volumes: ["radial-data:/data"]
+    restart: unless-stopped
+volumes:
+  radial-data:
+

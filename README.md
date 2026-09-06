@@ -1,0 +1,63 @@
+# Radial
+
+Radial is a Rust workspace for terrain-based radar line-of-sight coverage. The
+native server owns every scientific and SRTM operation; the WebAssembly client
+only edits radar definitions, starts jobs and displays server-produced map tiles
+and profiles.
+
+> Status: foundational implementation. The LOS core, ring traversal, angular
+> lookup, bitset fusion, HGT decoding, persistent envelope, PNG/LOD primitives,
+> API contracts and server shell are implemented and tested. Network SRTM
+> acquisition, complete asynchronous job execution, full WMTS routing and the
+> production WASM map client remain integration work. See `docs/STATUS.md`.
+
+## Scientific scope
+
+The engine computes geometric intervisibility and minimum target height AGL. It
+uses effective Earth curvature `h' = h - d²/(2kR)`, with `R = 6,371,000 m` and
+default `k = 4/3`. It does not claim an RF link budget and does not model
+diffraction, Fresnel clearance, free-space or atmospheric losses, clutter,
+transmit power, receive power, or antenna patterns.
+
+Internal loops use integer grid offsets in a documented local metric grid. A
+production import must reproject geodetic SRTM samples to that local CRS before
+calling `coverage-core`; longitude/cos(latitude) approximations are not used by
+the core.
+
+## Workspace
+
+- `coverage-core`: dependency-free LOS, clipped rings, angular bins, profiles,
+  bitsets and fusion.
+- `terrain-srtm`: strict SRTM-1/SRTM-3 HGT decoding and immutable shared mosaics.
+- `coverage-storage`: versioned atomic `.rcov` / `.rhgt` envelopes.
+- `radar-api`: shared JSON contracts.
+- `radar-wmts`: semantic LOD reducers, PNG and ETag primitives.
+- `radar-server`: bounded HTTP entry point.
+- `radar-web`: presentation-only WASM boundary.
+- `benchmark/standalone`: offline deterministic ring/LOS hot-loop benchmark.
+
+## Development
+
+```sh
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+rustc --edition=2021 -O benchmark/standalone/main.rs -o /tmp/radial-bench
+RADAR_BENCH_CELL_M=90 /tmp/radial-bench
+cargo run -p radar-server
+```
+
+The server listens on `RADAR_BIND` (`0.0.0.0:8080` by default). Compile the web
+crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
+provided by the hosting shell before production deployment.
+
+## Deployment
+
+`docker compose up --build` starts the native server. Persistent terrain and
+result data is mounted at `/data`. GitHub Pages and the server are independent;
+set an explicit HTTPS API origin and configure CORS to the exact Pages origin in
+production. Immutable WMTS URLs include dataset/version/date, enabling one-year
+cache headers without stale overwrites.
+
+Dual licensed under MIT or Apache-2.0.
+

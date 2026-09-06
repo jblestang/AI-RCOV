@@ -1,0 +1,16 @@
+[package]
+name="radar-server"
+version.workspace=true
+edition.workspace=true
+license.workspace=true
+[dependencies]
+axum.workspace=true
+tokio.workspace=true
+serde.workspace=true
+serde_json.workspace=true
+uuid.workspace=true
+tower-http.workspace=true
+tracing.workspace=true
+tracing-subscriber.workspace=true
+radar-api={path="../radar-api"}
+
