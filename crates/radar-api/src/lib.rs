@@ -30,6 +30,15 @@ pub struct FusionRequest {
     pub target_agl_m: u16,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct FusionResponse {
+    pub fusion_id: Uuid,
+    pub selected_radars: Vec<Uuid>,
+    pub target_agl_m: u16,
+    pub width: u32,
+    pub height: u32,
+    pub dataset_url: String,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     Queued,

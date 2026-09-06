@@ -33,6 +33,10 @@ Multi-radar jobs now plan one shared azimuthal-equidistant grid covering the
 union of radar ranges. Terrain samples are allocated once and shared immutably
 between LOS workers; all persisted layers therefore have compatible projection,
 origin, extent and dimensions for later selection/fusion.
+`POST /api/v1/fusions` now resolves selected radar UUIDs to server-owned result
+paths, rejects duplicates, streams `.rhgt` layers at the requested integer AGL,
+and atomically creates an immutable, versioned/date-stamped dataset manifest and
+radar-count payload. Changing the active selection never reruns LOS.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -41,8 +45,7 @@ SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one
-or two radars, complete WMTS REST
+pool and internal sector parallelism for one or two radars, complete WMTS REST
 routes/capabilities/cache, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be

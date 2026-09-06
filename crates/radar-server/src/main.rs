@@ -6,8 +6,8 @@ use axum::{
 };
 use chrono::Utc;
 use coverage_core::{compute_coverage, Grid, LosConfig};
-use coverage_storage::{write_rcov, write_rhgt, Metadata};
-use radar_api::{FusionRequest, JobRequest, JobState, JobStatus, Radar};
+use coverage_storage::{merge_rhgt_counts_streaming, write_rcov, write_rhgt, Metadata};
+use radar_api::{FusionRequest, FusionResponse, JobRequest, JobState, JobStatus, Radar};
 use std::{
     collections::HashMap,
     sync::{
@@ -394,10 +394,102 @@ async fn set_cancelled(s: &App, id: Uuid) {
         }
     }
 }
-async fn fusion(Json(req): Json<FusionRequest>) -> Json<serde_json::Value> {
-    Json(
-        serde_json::json!({"selected_radars":req.radar_ids,"target_agl_m":req.target_agl_m,"status":"queued"}),
-    )
+async fn fusion(
+    State(s): State<App>,
+    Json(req): Json<FusionRequest>,
+) -> ApiResult<(StatusCode, Json<FusionResponse>)> {
+    if req.radar_ids.len() > s.max_radars {
+        return Err(public_error(StatusCode::BAD_REQUEST, "radar count"));
+    }
+    let mut unique = req.radar_ids.clone();
+    unique.sort();
+    unique.dedup();
+    if unique.len() != req.radar_ids.len() {
+        return Err(public_error(StatusCode::BAD_REQUEST, "duplicate radar id"));
+    }
+    let mut paths = Vec::with_capacity(unique.len());
+    for id in &unique {
+        paths.push(
+            latest_rhgt(s.result_directory.as_ref(), *id)
+                .map_err(|_| public_error(StatusCode::NOT_FOUND, "coverage not found"))?,
+        )
+    }
+    let directory = s.result_directory.clone();
+    let target = req.target_agl_m;
+    let fusion_id = Uuid::new_v4();
+    let id_for_worker = fusion_id;
+    let (metadata, counts) =
+        tokio::task::spawn_blocking(move || merge_rhgt_counts_streaming(&paths, target))
+            .await
+            .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "fusion worker failed"))?
+            .map_err(|_| {
+                public_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "coverage layers are incompatible",
+                )
+            })?;
+    let (width, height) = metadata.as_ref().map_or((0, 0), |m| (m.width, m.height));
+    let dataset = directory.join("datasets").join(fusion_id.to_string());
+    std::fs::create_dir_all(&dataset)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
+    atomic_bytes(&dataset.join("radar-count.bin"), &counts)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
+    let manifest = serde_json::json!({"dataset_id":id_for_worker,"version":1,"date":Utc::now().format("%Y-%m-%d").to_string(),"target_agl_m":target,"radar_ids":unique,"metadata":metadata});
+    let manifest_bytes = serde_json::to_vec_pretty(&manifest)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "manifest failed"))?;
+    atomic_bytes(&dataset.join("metadata.json"), &manifest_bytes)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
+    Ok((
+        StatusCode::CREATED,
+        Json(FusionResponse {
+            fusion_id,
+            selected_radars: req.radar_ids,
+            target_agl_m: target,
+            width,
+            height,
+            dataset_url: format!(
+                "/wmts/{fusion_id}/1/{}/metadata.json",
+                Utc::now().format("%Y-%m-%d")
+            ),
+        }),
+    ))
+}
+fn latest_rhgt(
+    directory: &std::path::Path,
+    id: Uuid,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    let prefix = format!("{id}-");
+    let mut candidates = std::fs::read_dir(directory)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|v| v == "rhgt")
+                && p.file_name()
+                    .and_then(|v| v.to_str())
+                    .is_some_and(|v| v.starts_with(&prefix))
+        })
+        .filter_map(|p| {
+            std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .map(|t| (t, p))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|v| v.0);
+    candidates
+        .pop()
+        .map(|v| v.1)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "coverage"))
+}
+fn atomic_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes)?;
+    f.flush()?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(tmp, path)
 }
 type ApiResult<T> = Result<T, (StatusCode, Json<serde_json::Value>)>;
 fn public_error(status: StatusCode, message: &str) -> (StatusCode, Json<serde_json::Value>) {
