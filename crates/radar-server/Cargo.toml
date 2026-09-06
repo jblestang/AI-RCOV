@@ -18,3 +18,4 @@ blake3.workspace=true
 coverage-core={path="../coverage-core",features=["rayon"]}
 coverage-storage={path="../coverage-storage"}
 terrain-srtm={path="../terrain-srtm"}
+radar-wmts={path="../radar-wmts"}

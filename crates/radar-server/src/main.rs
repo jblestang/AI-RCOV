@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderMap, StatusCode},
+    response::Response,
     routing::{get, post},
     Json, Router,
 };
@@ -8,6 +9,7 @@ use chrono::Utc;
 use coverage_core::{compute_coverage, Grid, LosConfig};
 use coverage_storage::{merge_rhgt_counts_streaming, write_rcov, write_rhgt, Metadata};
 use radar_api::{FusionRequest, FusionResponse, JobRequest, JobState, JobStatus, Radar};
+use radar_wmts::{etag, grayscale_png, TILE_SIZE};
 use std::{
     collections::HashMap,
     sync::{
@@ -70,6 +72,14 @@ async fn main() {
         .route("/api/v1/jobs", post(create_job))
         .route("/api/v1/jobs/{id}", get(get_job).delete(cancel_job))
         .route("/api/v1/fusions", post(fusion))
+        .route(
+            "/wmts/{dataset}/{version}/{date}/metadata.json",
+            get(wmts_metadata),
+        )
+        .route(
+            "/wmts/{dataset}/{version}/{date}/radar-count/{z}/{row}/{col}.png",
+            get(wmts_count_tile),
+        )
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .layer(CorsLayer::permissive())
         .with_state(state);
@@ -490,6 +500,146 @@ fn atomic_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Err
     f.sync_all()?;
     drop(f);
     std::fs::rename(tmp, path)
+}
+async fn wmts_metadata(
+    State(s): State<App>,
+    Path((dataset, version, date)): Path<(Uuid, u16, String)>,
+) -> ApiResult<Response> {
+    let dir = dataset_directory(&s, dataset, version, &date)?;
+    let bytes = std::fs::read(dir.join("metadata.json"))
+        .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?;
+    response_bytes(StatusCode::OK, "application/json", bytes, None)
+}
+async fn wmts_count_tile(
+    State(s): State<App>,
+    Path((dataset, version, date, z, row, col)): Path<(Uuid, u16, String, u8, u32, u32)>,
+    headers: HeaderMap,
+) -> ApiResult<Response> {
+    let dir = dataset_directory(&s, dataset, version, &date)?;
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("metadata.json"))
+            .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?,
+    )
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset"))?;
+    let metadata = &manifest["metadata"];
+    let width = metadata["width"].as_u64().unwrap_or(0) as usize;
+    let height = metadata["height"].as_u64().unwrap_or(0) as usize;
+    if width == 0 || height == 0 {
+        return Err(public_error(StatusCode::NO_CONTENT, "empty dataset"));
+    }
+    let levels = tile_levels(width, height);
+    if z >= levels {
+        return Err(public_error(StatusCode::BAD_REQUEST, "tile matrix"));
+    }
+    let factor = 1usize << (levels - 1 - z);
+    let matrix_width = width.div_ceil(TILE_SIZE * factor);
+    let matrix_height = height.div_ceil(TILE_SIZE * factor);
+    if col as usize >= matrix_width || row as usize >= matrix_height {
+        return Err(public_error(StatusCode::NOT_FOUND, "tile outside matrix"));
+    }
+    let path = dir.join("radar-count.bin");
+    let bytes = tokio::task::spawn_blocking(move || {
+        render_count_tile(&path, width, height, factor, row as usize, col as usize)
+    })
+    .await
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile worker failed"))?
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile generation failed"))?;
+    let tag = etag(&bytes);
+    if headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        == Some(tag.as_str())
+    {
+        return response_bytes(StatusCode::NOT_MODIFIED, "image/png", Vec::new(), Some(tag));
+    }
+    response_bytes(StatusCode::OK, "image/png", bytes, Some(tag))
+}
+fn dataset_directory(s: &App, id: Uuid, version: u16, date: &str) -> ApiResult<std::path::PathBuf> {
+    if version != 1
+        || date.len() != 10
+        || !date.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 4 | 7) {
+                b == b'-'
+            } else {
+                b.is_ascii_digit()
+            }
+        })
+    {
+        return Err(public_error(
+            StatusCode::BAD_REQUEST,
+            "dataset version or date",
+        ));
+    }
+    let dir = s.result_directory.join("datasets").join(id.to_string());
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("metadata.json"))
+            .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?,
+    )
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset"))?;
+    if manifest["version"] != version || manifest["date"] != date {
+        return Err(public_error(
+            StatusCode::NOT_FOUND,
+            "dataset version not found",
+        ));
+    }
+    Ok(dir)
+}
+fn tile_levels(width: usize, height: usize) -> u8 {
+    let mut size = width.max(height);
+    let mut levels = 1;
+    while size > TILE_SIZE {
+        size = size.div_ceil(2);
+        levels += 1
+    }
+    levels
+}
+fn render_count_tile(
+    path: &std::path::Path,
+    width: usize,
+    height: usize,
+    factor: usize,
+    row: usize,
+    col: usize,
+) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let mut output = vec![0u8; TILE_SIZE * TILE_SIZE];
+    for ty in 0..TILE_SIZE {
+        for tx in 0..TILE_SIZE {
+            let source_x = (col * TILE_SIZE + tx) * factor;
+            let source_y = (row * TILE_SIZE + ty) * factor;
+            if source_x >= width || source_y >= height {
+                continue;
+            }
+            let mut max = 0;
+            for sy in source_y..(source_y + factor).min(height) {
+                let offset = sy * width + source_x;
+                file.seek(SeekFrom::Start(offset as u64))?;
+                let mut line = vec![0u8; (source_x + factor).min(width) - source_x];
+                file.read_exact(&mut line)?;
+                max = max.max(line.into_iter().max().unwrap_or(0));
+            }
+            output[ty * TILE_SIZE + tx] = max
+        }
+    }
+    grayscale_png(&output).map_err(std::io::Error::other)
+}
+fn response_bytes(
+    status: StatusCode,
+    content_type: &'static str,
+    body: Vec<u8>,
+    tag: Option<String>,
+) -> ApiResult<Response> {
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "public, max-age=31536000, immutable");
+    if let Some(tag) = tag {
+        builder = builder.header(header::ETAG, tag)
+    }
+    builder
+        .body(axum::body::Body::from(body))
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "response failed"))
 }
 type ApiResult<T> = Result<T, (StatusCode, Json<serde_json::Value>)>;
 fn public_error(status: StatusCode, message: &str) -> (StatusCode, Json<serde_json::Value>) {

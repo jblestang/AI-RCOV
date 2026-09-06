@@ -1000,6 +1000,7 @@ dependencies = [
  "coverage-core",
  "coverage-storage",
  "radar-api",
+ "radar-wmts",
  "serde",
  "serde_json",
  "terrain-srtm",

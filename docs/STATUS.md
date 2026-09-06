@@ -37,6 +37,10 @@ origin, extent and dimensions for later selection/fusion.
 paths, rejects duplicates, streams `.rhgt` layers at the requested integer AGL,
 and atomically creates an immutable, versioned/date-stamped dataset manifest and
 radar-count payload. Changing the active selection never reruns LOS.
+The REST tile service now publishes fusion metadata and 256 px radar-count PNGs
+at computed detail levels. It validates UUID/version/date/matrix/row/column,
+uses max aggregation, reads only required source rows, emits deterministic ETags,
+honours `If-None-Match` with 304, and sets one-year immutable cache headers.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -45,8 +49,8 @@ SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one or two radars, complete WMTS REST
-routes/capabilities/cache, browser map and profiles, runtime CORS allow-list,
+pool and internal sector parallelism for one or two radars, GetCapabilities and
+non-count WMTS layers, PNG disk cache, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be
 guarded by the future memory scheduler.
