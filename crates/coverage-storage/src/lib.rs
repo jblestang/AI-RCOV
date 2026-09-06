@@ -193,6 +193,58 @@ pub fn merge_rhgt_counts_streaming(
     }
     Ok((reference, out))
 }
+
+/// Returns the best (lowest) valid minimum-detection height per cell while
+/// keeping only one input block and the output grid resident.
+pub fn merge_rhgt_minimum_streaming(
+    paths: &[PathBuf],
+) -> Result<(Option<Metadata>, Vec<u16>), StorageError> {
+    if paths.is_empty() {
+        return Ok((None, Vec::new()));
+    }
+    let mut reference = None;
+    let mut out = Vec::new();
+    for path in paths {
+        let mut r = BufReader::new(File::open(path)?);
+        let h = read_header(&mut r, RHGT_MAGIC)?;
+        let cells = h.metadata.cells()?;
+        if h.payload_len != cells as u64 * 2 {
+            return Err(StorageError::Format("rhgt payload"));
+        }
+        if let Some(m) = &reference {
+            if !Metadata::same_grid(m, &h.metadata) {
+                return Err(StorageError::IncompatibleGrid);
+            }
+        } else {
+            out.resize(cells, NO_DATA);
+            reference = Some(h.metadata.clone())
+        }
+        let mut hash = hasher(RHGT_MAGIC, &h.json);
+        let mut buffer = vec![0u8; BLOCK];
+        let mut remaining = h.payload_len as usize;
+        let mut offset = 0;
+        while remaining > 0 {
+            let n = remaining.min(buffer.len());
+            r.read_exact(&mut buffer[..n])?;
+            hash.update(&buffer[..n]);
+            for pair in buffer[..n].as_chunks::<2>().0 {
+                let value = u16::from_le_bytes(*pair);
+                if value != NO_DATA {
+                    out[offset] = out[offset].min(value)
+                }
+                offset += 1
+            }
+            remaining -= n
+        }
+        let mut stored = [0; CHECKSUM];
+        r.read_exact(&mut stored)?;
+        if hash.finalize().as_bytes() != &stored {
+            return Err(StorageError::Checksum);
+        }
+        eof(&mut r)?
+    }
+    Ok((reference, out))
+}
 pub fn find_by_config_hash(
     dir: &Path,
     magic: [u8; 4],
@@ -346,6 +398,12 @@ mod tests {
             vec![2, 2, 0, 0]
         );
         assert!(merge_rhgt_counts_streaming(&[], 50).unwrap().1.is_empty());
+        assert_eq!(
+            merge_rhgt_minimum_streaming(&[d.join("a.rhgt"), d.join("b.rhgt")])
+                .unwrap()
+                .1,
+            vec![0, 10, 100, 100]
+        );
         fs::remove_dir_all(d).unwrap()
     }
     #[test]

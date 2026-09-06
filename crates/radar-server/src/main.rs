@@ -7,7 +7,9 @@ use axum::{
 };
 use chrono::Utc;
 use coverage_core::{compute_coverage, Grid, LosConfig};
-use coverage_storage::{merge_rhgt_counts_streaming, write_rcov, write_rhgt, Metadata};
+use coverage_storage::{
+    merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, write_rcov, write_rhgt, Metadata,
+};
 use radar_api::{FusionRequest, FusionResponse, JobRequest, JobState, JobStatus, Radar};
 use radar_wmts::{etag, grayscale_png, TILE_SIZE};
 use std::{
@@ -81,8 +83,8 @@ async fn main() {
             get(wmts_capabilities),
         )
         .route(
-            "/wmts/{dataset}/{version}/{date}/radar-count/{z}/{row}/{col}.png",
-            get(wmts_count_tile),
+            "/wmts/{dataset}/{version}/{date}/{layer}/{z}/{row}/{col}.png",
+            get(wmts_tile),
         )
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .layer(CorsLayer::permissive())
@@ -432,21 +434,60 @@ async fn fusion(
     let target = req.target_agl_m;
     let fusion_id = Uuid::new_v4();
     let id_for_worker = fusion_id;
-    let (metadata, counts) =
-        tokio::task::spawn_blocking(move || merge_rhgt_counts_streaming(&paths, target))
-            .await
-            .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "fusion worker failed"))?
-            .map_err(|_| {
-                public_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "coverage layers are incompatible",
-                )
-            })?;
+    let (metadata, layers, minimum) = tokio::task::spawn_blocking(move || {
+        let mut layers = Vec::new();
+        let mut meta = None;
+        for height in [0, 30, 50, 100, target] {
+            if layers.iter().any(|(h, _)| *h == height) {
+                continue;
+            }
+            let (m, c) = merge_rhgt_counts_streaming(&paths, height)?;
+            if meta.is_none() {
+                meta = m
+            }
+            layers.push((height, c));
+        }
+        let (_, minimum) = merge_rhgt_minimum_streaming(&paths)?;
+        Ok::<_, coverage_storage::StorageError>((meta, layers, minimum))
+    })
+    .await
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "fusion worker failed"))?
+    .map_err(|_| {
+        public_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "coverage layers are incompatible",
+        )
+    })?;
     let (width, height) = metadata.as_ref().map_or((0, 0), |m| (m.width, m.height));
     let dataset = directory.join("datasets").join(fusion_id.to_string());
     std::fs::create_dir_all(&dataset)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
-    atomic_bytes(&dataset.join("radar-count.bin"), &counts)
+    for (height, counts) in &layers {
+        let name = match *height {
+            0 => "ground.bin".into(),
+            30 => "agl-30m.bin".into(),
+            50 => "agl-50m.bin".into(),
+            100 => "agl-100m.bin".into(),
+            h => format!("agl-{h}m.bin"),
+        };
+        let boolean = counts
+            .iter()
+            .map(|v| if *v > 0 { 255 } else { 0 })
+            .collect::<Vec<_>>();
+        atomic_bytes(&dataset.join(name), &boolean).map_err(|_| {
+            public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed")
+        })?;
+        if *height == target {
+            atomic_bytes(&dataset.join("radar-count.bin"), counts).map_err(|_| {
+                public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed")
+            })?
+        }
+    }
+    let minimum_bytes = minimum
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect::<Vec<_>>();
+    atomic_bytes(&dataset.join("min-detection-height.bin"), &minimum_bytes)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
     let manifest = serde_json::json!({"dataset_id":id_for_worker,"version":1,"date":Utc::now().format("%Y-%m-%d").to_string(),"target_agl_m":target,"radar_ids":unique,"metadata":metadata});
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
@@ -533,11 +574,22 @@ async fn wmts_capabilities(
         let factor = 1usize << (levels - 1 - z);
         matrices.push_str(&format!("<TileMatrix><ows:Identifier>{z}</ows:Identifier><ScaleDenominator>{}</ScaleDenominator><TopLeftCorner>{} {}</TopLeftCorner><TileWidth>256</TileWidth><TileHeight>256</TileHeight><MatrixWidth>{}</MatrixWidth><MatrixHeight>{}</MatrixHeight></TileMatrix>",meta["resolution_m"].as_f64().unwrap_or(90.)*factor as f64/0.00028,meta["extent"][0],meta["extent"][3],width.div_ceil(TILE_SIZE*factor),height.div_ceil(TILE_SIZE*factor)));
     }
-    let template = format!(
-        "/wmts/{dataset}/{version}/{date}/radar-count/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"
-    );
+    let mut layers = String::new();
+    for (name, title) in [
+        ("ground", "Ground visibility"),
+        ("agl-30m", "Visibility at 30 m AGL"),
+        ("agl-50m", "Visibility at 50 m AGL"),
+        ("agl-100m", "Visibility at 100 m AGL"),
+        ("min-detection-height", "Minimum detection height"),
+        ("radar-count", "Radar count"),
+    ] {
+        let template = format!(
+            "/wmts/{dataset}/{version}/{date}/{name}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"
+        );
+        layers.push_str(&format!("<Layer><ows:Title>{title}</ows:Title><ows:Identifier>{name}</ows:Identifier><Format>image/png</Format><ResourceURL format=\"image/png\" resourceType=\"tile\" template=\"{template}\"/><TileMatrixSetLink><TileMatrixSet>radial</TileMatrixSet></TileMatrixSetLink></Layer>"));
+    }
     let crs = xml_escape(meta["crs"].as_str().unwrap_or("local metric"));
-    let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Capabilities xmlns=\"http://www.opengis.net/wmts/1.0\" xmlns:ows=\"http://www.opengis.net/ows/1.1\" version=\"1.0.0\"><Contents><Layer><ows:Title>Radar count</ows:Title><ows:Identifier>radar-count</ows:Identifier><Format>image/png</Format><ResourceURL format=\"image/png\" resourceType=\"tile\" template=\"{template}\"/><TileMatrixSetLink><TileMatrixSet>radial</TileMatrixSet></TileMatrixSetLink></Layer><TileMatrixSet><ows:Identifier>radial</ows:Identifier><ows:SupportedCRS>{crs}</ows:SupportedCRS>{matrices}</TileMatrixSet></Contents></Capabilities>");
+    let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Capabilities xmlns=\"http://www.opengis.net/wmts/1.0\" xmlns:ows=\"http://www.opengis.net/ows/1.1\" version=\"1.0.0\"><Contents>{layers}<TileMatrixSet><ows:Identifier>radial</ows:Identifier><ows:SupportedCRS>{crs}</ows:SupportedCRS>{matrices}</TileMatrixSet></Contents></Capabilities>");
     response_bytes(StatusCode::OK, "application/xml", xml.into_bytes(), None)
 }
 fn xml_escape(v: &str) -> String {
@@ -547,9 +599,17 @@ fn xml_escape(v: &str) -> String {
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
 }
-async fn wmts_count_tile(
+async fn wmts_tile(
     State(s): State<App>,
-    Path((dataset, version, date, z, row, col)): Path<(Uuid, u16, String, u8, u32, u32)>,
+    Path((dataset, version, date, layer, z, row, col)): Path<(
+        Uuid,
+        u16,
+        String,
+        String,
+        u8,
+        u32,
+        u32,
+    )>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let dir = dataset_directory(&s, dataset, version, &date)?;
@@ -574,9 +634,18 @@ async fn wmts_count_tile(
     if col as usize >= matrix_width || row as usize >= matrix_height {
         return Err(public_error(StatusCode::NOT_FOUND, "tile outside matrix"));
     }
+    let source = match layer.as_str() {
+        "radar-count" => "radar-count.bin",
+        "ground" => "ground.bin",
+        "agl-30m" => "agl-30m.bin",
+        "agl-50m" => "agl-50m.bin",
+        "agl-100m" => "agl-100m.bin",
+        "min-detection-height" => "min-detection-height.bin",
+        _ => return Err(public_error(StatusCode::BAD_REQUEST, "layer")),
+    };
     let cache = dir
         .join("tiles")
-        .join("radar-count")
+        .join(&layer)
         .join(z.to_string())
         .join(row.to_string())
         .join(format!("{col}.png"));
@@ -584,9 +653,14 @@ async fn wmts_count_tile(
         std::fs::read(&cache)
             .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?
     } else {
-        let path = dir.join("radar-count.bin");
+        let path = dir.join(source);
+        let minimum = layer == "min-detection-height";
         let generated = tokio::task::spawn_blocking(move || {
-            render_count_tile(&path, width, height, factor, row as usize, col as usize)
+            if minimum {
+                render_minimum_tile(&path, width, height, factor, row as usize, col as usize)
+            } else {
+                render_count_tile(&path, width, height, factor, row as usize, col as usize)
+            }
         })
         .await
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile worker failed"))?
@@ -675,6 +749,43 @@ fn render_count_tile(
                 max = max.max(line.into_iter().max().unwrap_or(0));
             }
             output[ty * TILE_SIZE + tx] = max
+        }
+    }
+    grayscale_png(&output).map_err(std::io::Error::other)
+}
+fn render_minimum_tile(
+    path: &std::path::Path,
+    width: usize,
+    height: usize,
+    factor: usize,
+    row: usize,
+    col: usize,
+) -> Result<Vec<u8>, std::io::Error> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let mut output = vec![0u8; TILE_SIZE * TILE_SIZE];
+    for ty in 0..TILE_SIZE {
+        for tx in 0..TILE_SIZE {
+            let sx = (col * TILE_SIZE + tx) * factor;
+            let sy = (row * TILE_SIZE + ty) * factor;
+            if sx >= width || sy >= height {
+                continue;
+            }
+            let mut minimum = u16::MAX;
+            for y in sy..(sy + factor).min(height) {
+                file.seek(SeekFrom::Start(((y * width + sx) * 2) as u64))?;
+                let mut line = vec![0u8; ((sx + factor).min(width) - sx) * 2];
+                file.read_exact(&mut line)?;
+                for pair in line.as_chunks::<2>().0 {
+                    let value = u16::from_le_bytes(*pair);
+                    if value != u16::MAX {
+                        minimum = minimum.min(value)
+                    }
+                }
+            }
+            if minimum != u16::MAX {
+                output[ty * TILE_SIZE + tx] = (minimum / 257) as u8
+            }
         }
     }
     grayscale_png(&output).map_err(std::io::Error::other)
