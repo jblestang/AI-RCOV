@@ -93,6 +93,12 @@ GetCapabilities, puis sauvegarde et vérifie les PNG `ground`, `agl-30m`,
 `agl-50m`, `agl-100m`, hauteur personnalisée (75 m par défaut),
 `min-detection-height` et `radar-count`. Il vérifie également ETag/304.
 
+Les requêtes strictement identiques sont idempotentes. Tant que le serveur reste
+actif, un second `POST /jobs` renvoie le job existant. Les artefacts LOS sont
+aussi indexés sur disque par la requête complète et validés par checksum après
+un redémarrage. Une fusion de la même sélection à la même hauteur réutilise le
+même identifiant et le même dataset WMTS persistant.
+
 Les PNG sont des tuiles WMTS brutes : une petite grille de test occupe
 normalement le coin supérieur gauche de la tuile 256 × 256. Le script génère
 aussi `preview.html`, qui détecte la zone non nulle, la centre et l'agrandit pour

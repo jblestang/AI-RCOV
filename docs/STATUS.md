@@ -28,7 +28,11 @@ enumerates and downloads all SRTM tiles, builds an immutable mosaic, projects a
 metric grid, executes LOS in a blocking native worker, and atomically persists
 both `.rcov` and `.rhgt`. A job reaches `completed` only after both validated
 artifacts exist for every requested radar; cancellation is checked between
-expensive stages.
+expensive stages. Identical requests share an in-memory job and persist an
+atomic request manifest; after restart, valid checksummed artifacts bypass SRTM
+reprojection and LOS. Fusion IDs are deterministically derived from the
+validated input artifacts and target AGL, so identical fusions reuse their
+existing WMTS dataset.
 Multi-radar jobs now plan one shared azimuthal-equidistant grid covering the
 union of radar ranges. Terrain samples are allocated once and shared immutably
 between LOS workers; all persisted layers therefore have compatible projection,

@@ -8,7 +8,8 @@ use axum::{
 use chrono::Utc;
 use coverage_core::{compute_coverage, compute_profile, Grid, LosConfig};
 use coverage_storage::{
-    merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, write_rcov, write_rhgt, Metadata,
+    merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, validate as validate_envelope,
+    write_rcov, write_rhgt, Metadata, RCOV_MAGIC, RHGT_MAGIC,
 };
 use radar_api::{FusionRequest, FusionResponse, JobRequest, JobState, JobStatus, Radar};
 use radar_wmts::{etag, grayscale_png, TILE_SIZE};
@@ -20,7 +21,7 @@ use std::{
     },
 };
 use terrain_srtm::{tiles_for_radius, LocalProjection, MetricRaster, SrtmCache, SrtmCacheConfig};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
     limit::RequestBodyLimitLayer,
@@ -35,11 +36,25 @@ struct JobRecord {
     status: JobStatus,
     cancelled: Arc<AtomicBool>,
 }
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JobCacheManifest {
+    request_hash: String,
+    artifacts: Vec<JobCacheArtifact>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct JobCacheArtifact {
+    rcov: String,
+    rhgt: String,
+}
+
 #[derive(Clone)]
 struct App {
     radars: Arc<RwLock<HashMap<Uuid, Radar>>>,
     jobs: Arc<RwLock<HashMap<Uuid, JobRecord>>>,
+    job_keys: Arc<RwLock<HashMap<String, Uuid>>>,
     job_slots: Arc<Semaphore>,
+    fusion_lock: Arc<Mutex<()>>,
     max_radars: usize,
     max_cells: u64,
     terrain: Arc<SrtmCache>,
@@ -50,7 +65,9 @@ impl Default for App {
         Self {
             radars: Default::default(),
             jobs: Default::default(),
+            job_keys: Default::default(),
             job_slots: Arc::new(Semaphore::new(env_usize("RADAR_MAX_CONCURRENT_JOBS", 2))),
+            fusion_lock: Default::default(),
             max_radars: env_usize("RADAR_MAX_RADARS", DEFAULT_MAX_RADARS),
             max_cells: env_u64("RADAR_MAX_GRID_CELLS", DEFAULT_MAX_CELLS),
             terrain: Arc::new(
@@ -156,6 +173,17 @@ async fn create_job(
             "job exceeds memory budget",
         ));
     }
+    let request_key = request_hash(&request)?;
+    if let Some(existing_id) = s.job_keys.read().await.get(&request_key).copied() {
+        if let Some(existing) = s.jobs.read().await.get(&existing_id) {
+            if !matches!(
+                existing.status.state,
+                JobState::Failed | JobState::Cancelled
+            ) {
+                return Ok((StatusCode::ACCEPTED, Json(existing.status.clone())));
+            }
+        }
+    }
     let id = Uuid::new_v4();
     let status = JobStatus {
         id,
@@ -175,6 +203,7 @@ async fn create_job(
             cancelled: cancelled.clone(),
         },
     );
+    s.job_keys.write().await.insert(request_key, id);
     tokio::spawn(run_job(s.clone(), id, cancelled, request));
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
@@ -219,6 +248,11 @@ async fn execute_job(
 ) -> Result<(), String> {
     std::fs::create_dir_all(s.result_directory.as_ref())
         .map_err(|_| "cannot prepare result storage".to_owned())?;
+    let request_key =
+        job_request_hash(request).map_err(|_| "cannot fingerprint coverage request".to_owned())?;
+    if cached_job_valid(s.result_directory.as_ref(), &request_key) {
+        return Ok(());
+    }
     let center_lat =
         request.radars.iter().map(|r| r.latitude).sum::<f64>() / request.radars.len() as f64;
     let sin_lon = request
@@ -285,6 +319,7 @@ async fn execute_job(
     .map_err(|_| "common grid exceeds limits or cannot be projected".to_owned())?;
     let terrain_digest = mosaic.content_hash();
     let shared_elevations: Arc<[Option<f32>]> = raster.elevations_m.clone().into();
+    let mut artifacts = Vec::with_capacity(request.radars.len());
     for (index, radar) in request.radars.iter().enumerate() {
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
@@ -295,7 +330,6 @@ async fn execute_job(
             0.1 + 0.35 * (index as f32 / request.radars.len() as f32),
         )
         .await;
-        let radar_clone = radar.clone();
         let k = request.effective_earth_k;
         let width = raster.width;
         let height = raster.height;
@@ -308,6 +342,64 @@ async fn execute_job(
             .map_err(|_| "radar projection failed".to_owned())?;
         let radar_x = ((radar_x_m - origin[0]) / resolution).round() as usize;
         let radar_y = ((bounds[3] - radar_y_m) / resolution).round() as usize;
+        let config_json = serde_json::to_vec(&serde_json::json!({
+            "radar": radar,
+            "resolution_m": request.resolution_m,
+            "effective_earth_k": request.effective_earth_k,
+            "projection": projection_name,
+            "origin": origin,
+            "extent": bounds,
+            "width": width,
+            "height": height,
+            "terrain_hash": terrain_digest,
+        }))
+        .map_err(|_| "radar serialization failed".to_owned())?;
+        let config_hash = blake3::hash(&config_json).to_hex().to_string();
+        let meta = Metadata {
+            radar_id: radar.id.to_string(),
+            radar_config_hash: config_hash,
+            terrain_hash: terrain_digest.clone(),
+            calculated_at: now(),
+            crs: projection_name.clone(),
+            origin,
+            resolution_m: resolution,
+            extent: bounds,
+            width: u32::try_from(width).map_err(|_| "grid width overflow".to_owned())?,
+            height: u32::try_from(height).map_err(|_| "grid height overflow".to_owned())?,
+            range_m: radar.range_m,
+            effective_earth_k: k,
+            nodata: u16::MAX,
+        };
+        let base =
+            s.result_directory
+                .join(format!("{}-{}", radar.id, &meta.radar_config_hash[..16]));
+        let rcov_path = base.with_extension("rcov");
+        let rhgt_path = base.with_extension("rhgt");
+        let cached = match (
+            validate_envelope(&rcov_path, RCOV_MAGIC),
+            validate_envelope(&rhgt_path, RHGT_MAGIC),
+        ) {
+            (Ok(rcov), Ok(rhgt)) => {
+                same_coverage_identity(&rcov, &meta)
+                    && same_coverage_identity(&rhgt, &meta)
+                    && rcov == rhgt
+            }
+            _ => false,
+        };
+        if cached {
+            artifacts.push(JobCacheArtifact {
+                rcov: file_name(&rcov_path)?,
+                rhgt: file_name(&rhgt_path)?,
+            });
+            set_progress(
+                s,
+                id,
+                0.45 + 0.5 * ((index + 1) as f32 / request.radars.len() as f32),
+            )
+            .await;
+            continue;
+        }
+        let radar_clone = radar.clone();
         let coverage = tokio::task::spawn_blocking(move || {
             let grid = Grid::from_shared(width, height, elevations)
                 .map_err(|_| "invalid metric terrain grid".to_owned())?;
@@ -330,41 +422,14 @@ async fn execute_job(
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
-        let config_json =
-            serde_json::to_vec(radar).map_err(|_| "radar serialization failed".to_owned())?;
-        let config_hash = blake3::hash(&config_json).to_hex().to_string();
-        let meta = Metadata {
-            radar_id: radar.id.to_string(),
-            radar_config_hash: config_hash,
-            terrain_hash: terrain_digest.clone(),
-            calculated_at: now(),
-            crs: projection_name,
-            origin,
-            resolution_m: resolution,
-            extent: bounds,
-            width: u32::try_from(width).map_err(|_| "grid width overflow".to_owned())?,
-            height: u32::try_from(height).map_err(|_| "grid height overflow".to_owned())?,
-            range_m: radar.range_m,
-            effective_earth_k: k,
-            nodata: u16::MAX,
-        };
-        let base =
-            s.result_directory
-                .join(format!("{}-{}", radar.id, &meta.radar_config_hash[..16]));
-        write_rcov(
-            &base.with_extension("rcov"),
-            &meta,
-            coverage.ground_visible.words(),
-            true,
-        )
-        .map_err(|_| "cannot persist visibility".to_owned())?;
-        write_rhgt(
-            &base.with_extension("rhgt"),
-            &meta,
-            &coverage.minimum_agl_m,
-            true,
-        )
-        .map_err(|_| "cannot persist minimum height".to_owned())?;
+        write_rcov(&rcov_path, &meta, coverage.ground_visible.words(), true)
+            .map_err(|_| "cannot persist visibility".to_owned())?;
+        write_rhgt(&rhgt_path, &meta, &coverage.minimum_agl_m, true)
+            .map_err(|_| "cannot persist minimum height".to_owned())?;
+        artifacts.push(JobCacheArtifact {
+            rcov: file_name(&rcov_path)?,
+            rhgt: file_name(&rhgt_path)?,
+        });
         set_progress(
             s,
             id,
@@ -372,6 +437,13 @@ async fn execute_job(
         )
         .await;
     }
+    write_job_cache(
+        s.result_directory.as_ref(),
+        &JobCacheManifest {
+            request_hash: request_key,
+            artifacts,
+        },
+    )?;
     Ok(())
 }
 async fn set_progress(s: &App, id: Uuid, value: f32) {
@@ -499,6 +571,7 @@ async fn fusion(
     State(s): State<App>,
     Json(req): Json<FusionRequest>,
 ) -> ApiResult<(StatusCode, Json<FusionResponse>)> {
+    let _fusion_guard = s.fusion_lock.lock().await;
     if req.radar_ids.len() > s.max_radars {
         return Err(public_error(StatusCode::BAD_REQUEST, "radar count"));
     }
@@ -515,10 +588,15 @@ async fn fusion(
                 .map_err(|_| public_error(StatusCode::NOT_FOUND, "coverage not found"))?,
         )
     }
+    let signature = fusion_signature(&paths, req.target_agl_m)?;
+    let fusion_id = uuid_from_hash(&signature);
     let directory = s.result_directory.clone();
     let target = req.target_agl_m;
-    let fusion_id = Uuid::new_v4();
     let id_for_worker = fusion_id;
+    let dataset = directory.join("datasets").join(fusion_id.to_string());
+    if let Some(response) = cached_fusion_response(&dataset, fusion_id, &req)? {
+        return Ok((StatusCode::OK, Json(response)));
+    }
     let (metadata, layers, minimum) = tokio::task::spawn_blocking(move || {
         let mut layers = Vec::new();
         let mut meta = None;
@@ -544,7 +622,6 @@ async fn fusion(
         )
     })?;
     let (width, height) = metadata.as_ref().map_or((0, 0), |m| (m.width, m.height));
-    let dataset = directory.join("datasets").join(fusion_id.to_string());
     std::fs::create_dir_all(&dataset)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
     for (height, counts) in &layers {
@@ -620,6 +697,149 @@ fn latest_rhgt(
         .pop()
         .map(|v| v.1)
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "coverage"))
+}
+
+fn request_hash(request: &JobRequest) -> ApiResult<String> {
+    job_request_hash(request)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "job fingerprint failed"))
+}
+
+fn job_request_hash(request: &JobRequest) -> Result<String, serde_json::Error> {
+    serde_json::to_vec(request).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+}
+
+fn job_cache_path(directory: &std::path::Path, request_hash: &str) -> std::path::PathBuf {
+    directory.join("jobs").join(format!("{request_hash}.json"))
+}
+
+fn cached_job_valid(directory: &std::path::Path, request_hash: &str) -> bool {
+    let Ok(bytes) = std::fs::read(job_cache_path(directory, request_hash)) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<JobCacheManifest>(&bytes) else {
+        return false;
+    };
+    if manifest.request_hash != request_hash || manifest.artifacts.is_empty() {
+        return false;
+    }
+    manifest.artifacts.iter().all(|artifact| {
+        let rcov = directory.join(&artifact.rcov);
+        let rhgt = directory.join(&artifact.rhgt);
+        if rcov.parent() != Some(directory)
+            || rhgt.parent() != Some(directory)
+            || rcov.file_name().and_then(|v| v.to_str()) != Some(artifact.rcov.as_str())
+            || rhgt.file_name().and_then(|v| v.to_str()) != Some(artifact.rhgt.as_str())
+        {
+            return false;
+        }
+        match (
+            validate_envelope(&rcov, RCOV_MAGIC),
+            validate_envelope(&rhgt, RHGT_MAGIC),
+        ) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    })
+}
+
+fn write_job_cache(directory: &std::path::Path, manifest: &JobCacheManifest) -> Result<(), String> {
+    let path = job_cache_path(directory, &manifest.request_hash);
+    let parent = path
+        .parent()
+        .ok_or_else(|| "invalid job cache path".to_owned())?;
+    std::fs::create_dir_all(parent).map_err(|_| "cannot prepare job cache".to_owned())?;
+    let bytes =
+        serde_json::to_vec_pretty(manifest).map_err(|_| "cannot serialize job cache".to_owned())?;
+    atomic_bytes(&path, &bytes).map_err(|_| "cannot persist job cache".to_owned())
+}
+
+fn file_name(path: &std::path::Path) -> Result<String, String> {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_owned)
+        .ok_or_else(|| "invalid result filename".to_owned())
+}
+
+fn same_coverage_identity(a: &Metadata, b: &Metadata) -> bool {
+    a.radar_id == b.radar_id
+        && a.radar_config_hash == b.radar_config_hash
+        && a.terrain_hash == b.terrain_hash
+        && a.crs == b.crs
+        && a.origin == b.origin
+        && a.resolution_m == b.resolution_m
+        && a.extent == b.extent
+        && a.width == b.width
+        && a.height == b.height
+        && a.range_m == b.range_m
+        && a.effective_earth_k == b.effective_earth_k
+        && a.nodata == b.nodata
+}
+
+fn fusion_signature(paths: &[std::path::PathBuf], target: u16) -> ApiResult<blake3::Hash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"radial-fusion-v1");
+    hasher.update(&target.to_le_bytes());
+    for path in paths {
+        let metadata = validate_envelope(path, RHGT_MAGIC)
+            .map_err(|_| public_error(StatusCode::UNPROCESSABLE_ENTITY, "invalid coverage"))?;
+        let encoded = serde_json::to_vec(&metadata).map_err(|_| {
+            public_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "fusion fingerprint failed",
+            )
+        })?;
+        hasher.update(&(encoded.len() as u64).to_le_bytes());
+        hasher.update(&encoded);
+    }
+    Ok(hasher.finalize())
+}
+
+fn uuid_from_hash(hash: &blake3::Hash) -> Uuid {
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash.as_bytes()[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+fn cached_fusion_response(
+    dataset: &std::path::Path,
+    fusion_id: Uuid,
+    req: &FusionRequest,
+) -> ApiResult<Option<FusionResponse>> {
+    let manifest_path = dataset.join("metadata.json");
+    if !manifest_path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&manifest_path)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset cache failed"))?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset cache"))?;
+    let required = [
+        "ground.bin".to_owned(),
+        "agl-30m.bin".to_owned(),
+        "agl-50m.bin".to_owned(),
+        "agl-100m.bin".to_owned(),
+        format!("agl-{}m.bin", req.target_agl_m),
+        "radar-count.bin".to_owned(),
+        "min-detection-height.bin".to_owned(),
+    ];
+    if required.iter().any(|name| !dataset.join(name).is_file()) {
+        return Ok(None);
+    }
+    let width = manifest["metadata"]["width"].as_u64().unwrap_or(0) as u32;
+    let height = manifest["metadata"]["height"].as_u64().unwrap_or(0) as u32;
+    let date = manifest["date"]
+        .as_str()
+        .ok_or_else(|| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset cache"))?;
+    Ok(Some(FusionResponse {
+        fusion_id,
+        selected_radars: req.radar_ids.clone(),
+        target_agl_m: req.target_agl_m,
+        width,
+        height,
+        dataset_url: format!("/wmts/{fusion_id}/1/{date}/metadata.json"),
+    }))
 }
 fn atomic_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
     use std::io::Write;
@@ -955,6 +1175,49 @@ fn cors_layer() -> CorsLayer {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn request() -> JobRequest {
+        JobRequest {
+            radars: vec![Radar {
+                id: Uuid::nil(),
+                name: "cache test".into(),
+                latitude: 45.2,
+                longitude: 2.2,
+                antenna_agl_m: 20.0,
+                range_m: 100_000.0,
+                active: true,
+            }],
+            resolution_m: 30,
+            effective_earth_k: 4.0 / 3.0,
+            target_heights_agl_m: vec![30, 50, 100],
+        }
+    }
+
+    #[test]
+    fn job_fingerprint_is_stable_and_parameter_sensitive() {
+        let original = request();
+        assert_eq!(
+            request_hash(&original).unwrap(),
+            request_hash(&original).unwrap()
+        );
+        let mut changed = original;
+        changed.resolution_m = 90;
+        assert_ne!(
+            request_hash(&changed).unwrap(),
+            request_hash(&request()).unwrap()
+        );
+    }
+
+    #[test]
+    fn fusion_uuid_is_stable() {
+        let hash = blake3::hash(b"same fusion inputs");
+        assert_eq!(uuid_from_hash(&hash), uuid_from_hash(&hash));
+        assert_ne!(
+            uuid_from_hash(&hash),
+            uuid_from_hash(&blake3::hash(b"different fusion inputs"))
+        );
+    }
+
     #[test]
     fn lod_handles_odd_dimensions() {
         assert_eq!(tile_levels(256, 256), 1);

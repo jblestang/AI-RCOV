@@ -142,6 +142,30 @@ pub fn read(path: &Path, magic: [u8; 4]) -> Result<(Metadata, Vec<u8>), StorageE
     validate_tail(&mut r, magic, &h.json, &p)?;
     Ok((h.metadata, p))
 }
+
+/// Validates an envelope, including its payload checksum, without retaining the
+/// payload in memory. Returns the trusted metadata when the file is complete.
+pub fn validate(path: &Path, magic: [u8; 4]) -> Result<Metadata, StorageError> {
+    let mut r = BufReader::new(File::open(path)?);
+    let h = read_header(&mut r, magic)?;
+    let mut hash = hasher(magic, &h.json);
+    let mut buffer = vec![0u8; BLOCK];
+    let mut remaining = h.payload_len;
+    while remaining > 0 {
+        let n = usize::try_from(remaining.min(BLOCK as u64))
+            .map_err(|_| StorageError::Format("payload size"))?;
+        r.read_exact(&mut buffer[..n])?;
+        hash.update(&buffer[..n]);
+        remaining -= n as u64;
+    }
+    let mut stored = [0; CHECKSUM];
+    r.read_exact(&mut stored)?;
+    if hash.finalize().as_bytes() != &stored {
+        return Err(StorageError::Checksum);
+    }
+    eof(&mut r)?;
+    Ok(h.metadata)
+}
 /// Fuses `.rhgt` layers using one 64 KiB input buffer; layers are never loaded together.
 pub fn merge_rhgt_counts_streaming(
     paths: &[PathBuf],
@@ -376,6 +400,7 @@ mod tests {
         let d = dir();
         let r = d.join("a.rhgt");
         write_rhgt(&r, &meta("a"), &[0, 30, NO_DATA, 100], false).unwrap();
+        assert_eq!(validate(&r, RHGT_MAGIC).unwrap(), meta("a"));
         assert_eq!(read(&r, RHGT_MAGIC).unwrap().1.len(), 8);
         assert_eq!(
             find_by_config_hash(&d, RHGT_MAGIC, "hash-a").unwrap(),
