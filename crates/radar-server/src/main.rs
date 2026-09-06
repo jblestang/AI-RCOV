@@ -194,32 +194,82 @@ async fn execute_job(
 ) -> Result<(), String> {
     std::fs::create_dir_all(s.result_directory.as_ref())
         .map_err(|_| "cannot prepare result storage".to_owned())?;
+    let center_lat =
+        request.radars.iter().map(|r| r.latitude).sum::<f64>() / request.radars.len() as f64;
+    let sin_lon = request
+        .radars
+        .iter()
+        .map(|r| r.longitude.to_radians().sin())
+        .sum::<f64>();
+    let cos_lon = request
+        .radars
+        .iter()
+        .map(|r| r.longitude.to_radians().cos())
+        .sum::<f64>();
+    let center_lon = sin_lon.atan2(cos_lon).to_degrees();
+    let projection = LocalProjection::new(center_lat, center_lon)
+        .map_err(|_| "projection setup failed".to_owned())?;
+    let projected = request
+        .radars
+        .iter()
+        .map(|r| {
+            projection
+                .forward(r.latitude, r.longitude)
+                .map(|xy| (r, xy))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "radar projection failed".to_owned())?;
+    let bounds = projected.iter().fold(
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ],
+        |mut b, (r, (x, y))| {
+            b[0] = b[0].min(x - r.range_m);
+            b[1] = b[1].min(y - r.range_m);
+            b[2] = b[2].max(x + r.range_m);
+            b[3] = b[3].max(y + r.range_m);
+            b
+        },
+    );
+    let mut coordinates = request
+        .radars
+        .iter()
+        .map(|r| tiles_for_radius(r.latitude, r.longitude, r.range_m))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "invalid terrain extent".to_owned())?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    coordinates.sort();
+    coordinates.dedup();
+    let mosaic = s
+        .terrain
+        .prepare_mosaic(&coordinates)
+        .await
+        .map_err(|_| "terrain preparation failed".to_owned())?;
+    let raster = MetricRaster::from_bounds(
+        &mosaic,
+        projection,
+        bounds,
+        request.resolution_m as f64,
+        s.max_cells as usize,
+    )
+    .map_err(|_| "common grid exceeds limits or cannot be projected".to_owned())?;
+    let terrain_digest = terrain_hash(&coordinates);
+    let shared_elevations: Arc<[Option<f32>]> = raster.elevations_m.clone().into();
     for (index, radar) in request.radars.iter().enumerate() {
         if cancelled.load(Ordering::Acquire) {
             return Ok(());
         }
-        let coordinates = tiles_for_radius(radar.latitude, radar.longitude, radar.range_m)
-            .map_err(|_| "invalid terrain extent".to_owned())?;
-        let mosaic = s
-            .terrain
-            .prepare_mosaic(&coordinates)
-            .await
-            .map_err(|_| "terrain preparation failed".to_owned())?;
         set_progress(
             s,
             id,
             0.1 + 0.35 * (index as f32 / request.radars.len() as f32),
         )
         .await;
-        let projection = LocalProjection::new(radar.latitude, radar.longitude)
-            .map_err(|_| "projection setup failed".to_owned())?;
-        let raster = MetricRaster::from_mosaic(
-            &mosaic,
-            projection,
-            radar.range_m,
-            request.resolution_m as f64,
-        )
-        .map_err(|_| "terrain reprojection failed".to_owned())?;
         let radar_clone = radar.clone();
         let k = request.effective_earth_k;
         let width = raster.width;
@@ -227,14 +277,20 @@ async fn execute_job(
         let resolution = raster.resolution_m;
         let projection_name = raster.projection.clone();
         let origin = raster.origin_m;
+        let elevations = shared_elevations.clone();
+        let (radar_x_m, radar_y_m) = projection
+            .forward(radar.latitude, radar.longitude)
+            .map_err(|_| "radar projection failed".to_owned())?;
+        let radar_x = ((radar_x_m - origin[0]) / resolution).round() as usize;
+        let radar_y = ((bounds[3] - radar_y_m) / resolution).round() as usize;
         let coverage = tokio::task::spawn_blocking(move || {
-            let grid = Grid::new(width, height, raster.elevations_m)
+            let grid = Grid::from_shared(width, height, elevations)
                 .map_err(|_| "invalid metric terrain grid".to_owned())?;
             compute_coverage(
                 &grid,
                 &LosConfig {
-                    radar_x: width / 2,
-                    radar_y: height / 2,
+                    radar_x,
+                    radar_y,
                     antenna_agl_m: radar_clone.antenna_agl_m,
                     cell_size_m: resolution,
                     range_m: radar_clone.range_m,
@@ -255,12 +311,12 @@ async fn execute_job(
         let meta = Metadata {
             radar_id: radar.id.to_string(),
             radar_config_hash: config_hash,
-            terrain_hash: terrain_hash(&coordinates),
+            terrain_hash: terrain_digest.clone(),
             calculated_at: now(),
             crs: projection_name,
             origin,
             resolution_m: resolution,
-            extent: [origin[0], origin[1], -origin[0], -origin[1]],
+            extent: bounds,
             width: u32::try_from(width).map_err(|_| "grid width overflow".to_owned())?,
             height: u32::try_from(height).map_err(|_| "grid height overflow".to_owned())?,
             range_m: radar.range_m,

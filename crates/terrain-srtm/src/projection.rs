@@ -109,6 +109,41 @@ impl MetricRaster {
             elevations_m: elevations,
         })
     }
+
+    pub fn from_bounds(
+        m: &TerrainMosaic,
+        p: LocalProjection,
+        bounds: [f64; 4],
+        resolution: f64,
+        max_cells: usize,
+    ) -> Result<Self, TerrainError> {
+        if resolution <= 0. || bounds[2] < bounds[0] || bounds[3] < bounds[1] {
+            return Err(TerrainError::Projection);
+        }
+        let width = ((bounds[2] - bounds[0]) / resolution).ceil() as usize + 1;
+        let height = ((bounds[3] - bounds[1]) / resolution).ceil() as usize + 1;
+        let cells = width
+            .checked_mul(height)
+            .filter(|n| *n <= max_cells)
+            .ok_or(TerrainError::Projection)?;
+        let mut elevations = Vec::with_capacity(cells);
+        for row in 0..height {
+            let y = bounds[3] - row as f64 * resolution;
+            for col in 0..width {
+                let x = bounds[0] + col as f64 * resolution;
+                let (lat, lon) = p.inverse(x, y)?;
+                elevations.push(m.sample(lat, lon)?.map(f32::from));
+            }
+        }
+        Ok(Self {
+            projection: p.crs_description(),
+            origin_m: [bounds[0], bounds[1]],
+            resolution_m: resolution,
+            width,
+            height,
+            elevations_m: elevations,
+        })
+    }
 }
 #[cfg(test)]
 mod tests {

@@ -6,7 +6,7 @@ pub const NO_DATA_HEIGHT: u16 = u16::MAX;
 pub struct Grid {
     pub width: usize,
     pub height: usize,
-    pub elevations_m: Vec<Option<f32>>,
+    pub elevations_m: std::sync::Arc<[Option<f32>]>,
 }
 
 impl Grid {
@@ -14,6 +14,20 @@ impl Grid {
         width: usize,
         height: usize,
         elevations_m: Vec<Option<f32>>,
+    ) -> Result<Self, CoverageError> {
+        if width.checked_mul(height) != Some(elevations_m.len()) {
+            return Err(CoverageError::InvalidGrid);
+        }
+        Ok(Self {
+            width,
+            height,
+            elevations_m: elevations_m.into(),
+        })
+    }
+    pub fn from_shared(
+        width: usize,
+        height: usize,
+        elevations_m: std::sync::Arc<[Option<f32>]>,
     ) -> Result<Self, CoverageError> {
         if width.checked_mul(height) != Some(elevations_m.len()) {
             return Err(CoverageError::InvalidGrid);
