@@ -23,8 +23,12 @@ The HTTP layer now validates job resolution, radar count, coordinates, grid-cell
 limits and estimated memory before returning `202 Accepted`. Jobs expose stable
 IDs, queued/running/failed/cancelled states, progress and timestamps, use a
 bounded semaphore, and can be cancelled. Radar updates preserve the path ID.
-Until terrain reprojection is connected, workers fail explicitly instead of
-publishing a synthetic or scientifically misleading completed coverage.
+The native job worker is connected end to end for mono-radar artifacts: it
+enumerates and downloads all SRTM tiles, builds an immutable mosaic, projects a
+metric grid, executes LOS in a blocking native worker, and atomically persists
+both `.rcov` and `.rhgt`. A job reaches `completed` only after both validated
+artifacts exist for every requested radar; cancellation is checked between
+expensive stages.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -32,9 +36,9 @@ immutable SRTM mosaic can be resampled into a metric raster at 30, 90 or 180 m.
 SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
-Not yet production-complete: reusable workspace pool and internal sector
-parallelism for one or two radars, scientific execution inside the job worker,
-complete WMTS REST
+Not yet production-complete: common-grid multi-radar job planning, content-based
+terrain hashing, reusable workspace pool and internal sector parallelism for one
+or two radars, complete WMTS REST
 routes/capabilities/cache, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be

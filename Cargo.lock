@@ -995,10 +995,14 @@ name = "radar-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "blake3",
  "chrono",
+ "coverage-core",
+ "coverage-storage",
  "radar-api",
  "serde",
  "serde_json",
+ "terrain-srtm",
  "tokio",
  "tower-http",
  "tracing",

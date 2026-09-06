@@ -5,6 +5,8 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use coverage_core::{compute_coverage, Grid, LosConfig};
+use coverage_storage::{write_rcov, write_rhgt, Metadata};
 use radar_api::{FusionRequest, JobRequest, JobState, JobStatus, Radar};
 use std::{
     collections::HashMap,
@@ -13,6 +15,7 @@ use std::{
         Arc,
     },
 };
+use terrain_srtm::{tiles_for_radius, LocalProjection, MetricRaster, SrtmCache, SrtmCacheConfig};
 use tokio::sync::{RwLock, Semaphore};
 use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
 use uuid::Uuid;
@@ -30,6 +33,8 @@ struct App {
     job_slots: Arc<Semaphore>,
     max_radars: usize,
     max_cells: u64,
+    terrain: Arc<SrtmCache>,
+    result_directory: Arc<std::path::PathBuf>,
 }
 impl Default for App {
     fn default() -> Self {
@@ -39,6 +44,17 @@ impl Default for App {
             job_slots: Arc::new(Semaphore::new(env_usize("RADAR_MAX_CONCURRENT_JOBS", 2))),
             max_radars: env_usize("RADAR_MAX_RADARS", DEFAULT_MAX_RADARS),
             max_cells: env_u64("RADAR_MAX_GRID_CELLS", DEFAULT_MAX_CELLS),
+            terrain: Arc::new(
+                SrtmCache::new(SrtmCacheConfig {
+                    disk_directory: std::env::var("RADAR_SRTM_CACHE")
+                        .map_or_else(|_| "data/srtm".into(), Into::into),
+                    ..Default::default()
+                })
+                .expect("valid SRTM cache configuration"),
+            ),
+            result_directory: Arc::new(
+                std::env::var("RADAR_RESULTS").map_or_else(|_| "data/results".into(), Into::into),
+            ),
         }
     }
 }
@@ -134,10 +150,10 @@ async fn create_job(
             cancelled: cancelled.clone(),
         },
     );
-    tokio::spawn(run_job(s.clone(), id, cancelled));
+    tokio::spawn(run_job(s.clone(), id, cancelled, request));
     Ok((StatusCode::ACCEPTED, Json(status)))
 }
-async fn run_job(s: App, id: Uuid, cancelled: Arc<AtomicBool>) {
+async fn run_job(s: App, id: Uuid, cancelled: Arc<AtomicBool>, request: JobRequest) {
     let Ok(_permit) = s.job_slots.acquire().await else {
         return;
     };
@@ -153,17 +169,146 @@ async fn run_job(s: App, id: Uuid, cancelled: Arc<AtomicBool>) {
             job.status.progress = 0.01
         }
     }
+    let result = execute_job(&s, id, &request, &cancelled).await;
     let mut jobs = s.jobs.write().await;
     if let Some(job) = jobs.get_mut(&id) {
         if cancelled.load(Ordering::Acquire) {
             job.status.state = JobState::Cancelled;
             job.status.error = None
-        } else {
+        } else if let Err(message) = result {
             job.status.state = JobState::Failed;
-            job.status.error = Some("terrain reprojection pipeline is not configured".into())
+            job.status.error = Some(message)
+        } else {
+            job.status.state = JobState::Completed;
+            job.status.progress = 1.0
         }
         job.status.finished_at = Some(now())
     }
+}
+
+async fn execute_job(
+    s: &App,
+    id: Uuid,
+    request: &JobRequest,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    std::fs::create_dir_all(s.result_directory.as_ref())
+        .map_err(|_| "cannot prepare result storage".to_owned())?;
+    for (index, radar) in request.radars.iter().enumerate() {
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let coordinates = tiles_for_radius(radar.latitude, radar.longitude, radar.range_m)
+            .map_err(|_| "invalid terrain extent".to_owned())?;
+        let mosaic = s
+            .terrain
+            .prepare_mosaic(&coordinates)
+            .await
+            .map_err(|_| "terrain preparation failed".to_owned())?;
+        set_progress(
+            s,
+            id,
+            0.1 + 0.35 * (index as f32 / request.radars.len() as f32),
+        )
+        .await;
+        let projection = LocalProjection::new(radar.latitude, radar.longitude)
+            .map_err(|_| "projection setup failed".to_owned())?;
+        let raster = MetricRaster::from_mosaic(
+            &mosaic,
+            projection,
+            radar.range_m,
+            request.resolution_m as f64,
+        )
+        .map_err(|_| "terrain reprojection failed".to_owned())?;
+        let radar_clone = radar.clone();
+        let k = request.effective_earth_k;
+        let width = raster.width;
+        let height = raster.height;
+        let resolution = raster.resolution_m;
+        let projection_name = raster.projection.clone();
+        let origin = raster.origin_m;
+        let coverage = tokio::task::spawn_blocking(move || {
+            let grid = Grid::new(width, height, raster.elevations_m)
+                .map_err(|_| "invalid metric terrain grid".to_owned())?;
+            compute_coverage(
+                &grid,
+                &LosConfig {
+                    radar_x: width / 2,
+                    radar_y: height / 2,
+                    antenna_agl_m: radar_clone.antenna_agl_m,
+                    cell_size_m: resolution,
+                    range_m: radar_clone.range_m,
+                    effective_earth_k: k,
+                    angular_sectors: angular_sectors(radar_clone.range_m, resolution),
+                },
+            )
+            .map_err(|_| "LOS computation failed".to_owned())
+        })
+        .await
+        .map_err(|_| "LOS worker failed".to_owned())??;
+        if cancelled.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let config_json =
+            serde_json::to_vec(radar).map_err(|_| "radar serialization failed".to_owned())?;
+        let config_hash = blake3::hash(&config_json).to_hex().to_string();
+        let meta = Metadata {
+            radar_id: radar.id.to_string(),
+            radar_config_hash: config_hash,
+            terrain_hash: terrain_hash(&coordinates),
+            calculated_at: now(),
+            crs: projection_name,
+            origin,
+            resolution_m: resolution,
+            extent: [origin[0], origin[1], -origin[0], -origin[1]],
+            width: u32::try_from(width).map_err(|_| "grid width overflow".to_owned())?,
+            height: u32::try_from(height).map_err(|_| "grid height overflow".to_owned())?,
+            range_m: radar.range_m,
+            effective_earth_k: k,
+            nodata: u16::MAX,
+        };
+        let base =
+            s.result_directory
+                .join(format!("{}-{}", radar.id, &meta.radar_config_hash[..16]));
+        write_rcov(
+            &base.with_extension("rcov"),
+            &meta,
+            coverage.ground_visible.words(),
+            true,
+        )
+        .map_err(|_| "cannot persist visibility".to_owned())?;
+        write_rhgt(
+            &base.with_extension("rhgt"),
+            &meta,
+            &coverage.minimum_agl_m,
+            true,
+        )
+        .map_err(|_| "cannot persist minimum height".to_owned())?;
+        set_progress(
+            s,
+            id,
+            0.45 + 0.5 * ((index + 1) as f32 / request.radars.len() as f32),
+        )
+        .await;
+    }
+    Ok(())
+}
+async fn set_progress(s: &App, id: Uuid, value: f32) {
+    if let Some(job) = s.jobs.write().await.get_mut(&id) {
+        job.status.progress = value.clamp(0., 1.)
+    }
+}
+fn angular_sectors(range: f64, resolution: f64) -> usize {
+    let radius = (range / resolution).ceil();
+    ((std::f64::consts::TAU * radius).ceil() as usize).max(8)
+}
+fn terrain_hash(coordinates: &[terrain_srtm::TileCoordinate]) -> String {
+    let mut h = blake3::Hasher::new();
+    for c in coordinates {
+        h.update(&c.lat.to_le_bytes());
+        h.update(&c.lon.to_le_bytes());
+    }
+    h.finalize().to_hex().to_string()
 }
 async fn get_job(State(s): State<App>, Path(id): Path<Uuid>) -> ApiResult<Json<JobStatus>> {
     s.jobs

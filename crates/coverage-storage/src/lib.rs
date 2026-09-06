@@ -289,7 +289,9 @@ fn temp_path(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
+    static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
     fn meta(id: &str) -> Metadata {
         Metadata {
             radar_id: id.into(),
@@ -312,7 +314,8 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("radial-{}-{n}", std::process::id()));
+        let sequence = NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("radial-{}-{n}-{sequence}", std::process::id()));
         fs::create_dir(&p).unwrap();
         p
     }
