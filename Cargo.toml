@@ -38,5 +38,4 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "syn
 tower-http = { version = "0.6", features = ["cors", "limit", "request-id", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-uuid = { version = "1", features = ["serde", "v4"] }
-
+uuid = { version = "1", features = ["serde", "v4", "js"] }
