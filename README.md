@@ -109,6 +109,11 @@ et de LOD, zoom à la molette ou avec les boutons, déplacement souris/tactile,
 recentrage, grille optionnelle et marqueur du radar avec ses coordonnées. Les
 résultats sont placés dans `validation-output/`.
 
+L'infobulle affiche le cap, la distance, l'altitude terrain SRTM exacte en
+mètres AMSL et la hauteur minimale de détection en mètres AGL. Ces deux valeurs
+sont lues par cellule via `GET /wmts/{dataset}/{version}/{date}/sample` et ne
+sont donc pas quantifiées par le rendu PNG 8 bits.
+
 Pour un essai rapide :
 
 ```sh

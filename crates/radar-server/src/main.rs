@@ -8,8 +8,9 @@ use axum::{
 use chrono::Utc;
 use coverage_core::{compute_coverage, compute_profile, Grid, LosConfig, LOS_ALGORITHM_VERSION};
 use coverage_storage::{
-    merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, validate as validate_envelope,
-    write_rcov, write_rhgt, Metadata, RCOV_MAGIC, RHGT_MAGIC,
+    merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, read_rdem_value,
+    validate as validate_envelope, write_rcov, write_rdem, write_rhgt, Metadata, RCOV_MAGIC,
+    RDEM_MAGIC, RHGT_MAGIC,
 };
 use radar_api::{FusionRequest, FusionResponse, JobRequest, JobState, JobStatus, Radar};
 use radar_wmts::{etag, grayscale_png, TILE_SIZE};
@@ -46,6 +47,7 @@ struct JobCacheManifest {
 struct JobCacheArtifact {
     rcov: String,
     rhgt: String,
+    rdem: String,
 }
 
 #[derive(Clone)]
@@ -105,6 +107,7 @@ async fn main() {
             "/wmts/{dataset}/{version}/{date}/WMTSCapabilities.xml",
             get(wmts_capabilities),
         )
+        .route("/wmts/{dataset}/{version}/{date}/sample", get(wmts_sample))
         .route(
             "/wmts/{dataset}/{version}/{date}/{layer}/{z}/{row}/{tile}",
             get(wmts_tile),
@@ -175,12 +178,20 @@ async fn create_job(
     }
     let request_key = request_hash(&request)?;
     if let Some(existing_id) = s.job_keys.read().await.get(&request_key).copied() {
-        if let Some(existing) = s.jobs.read().await.get(&existing_id) {
-            if !matches!(
-                existing.status.state,
-                JobState::Failed | JobState::Cancelled
-            ) {
-                return Ok((StatusCode::ACCEPTED, Json(existing.status.clone())));
+        let existing_status = s
+            .jobs
+            .read()
+            .await
+            .get(&existing_id)
+            .map(|existing| existing.status.clone());
+        if let Some(existing) = existing_status {
+            let reusable = match existing.state {
+                JobState::Queued | JobState::Running => true,
+                JobState::Completed => cached_job_valid(s.result_directory.as_ref(), &request_key),
+                JobState::Failed | JobState::Cancelled => false,
+            };
+            if reusable {
+                return Ok((StatusCode::ACCEPTED, Json(existing)));
             }
         }
     }
@@ -377,6 +388,13 @@ async fn execute_job(
                 .join(format!("{}-{}", radar.id, &meta.radar_config_hash[..16]));
         let rcov_path = base.with_extension("rcov");
         let rhgt_path = base.with_extension("rhgt");
+        let rdem_path = base.with_extension("rdem");
+        let terrain_cached = validate_envelope(&rdem_path, RDEM_MAGIC)
+            .is_ok_and(|stored| same_coverage_identity(&stored, &meta));
+        if !terrain_cached {
+            write_rdem(&rdem_path, &meta, &shared_elevations, true)
+                .map_err(|_| "cannot persist terrain elevations".to_owned())?;
+        }
         let cached = match (
             validate_envelope(&rcov_path, RCOV_MAGIC),
             validate_envelope(&rhgt_path, RHGT_MAGIC),
@@ -392,6 +410,7 @@ async fn execute_job(
             artifacts.push(JobCacheArtifact {
                 rcov: file_name(&rcov_path)?,
                 rhgt: file_name(&rhgt_path)?,
+                rdem: file_name(&rdem_path)?,
             });
             set_progress(
                 s,
@@ -430,6 +449,7 @@ async fn execute_job(
         artifacts.push(JobCacheArtifact {
             rcov: file_name(&rcov_path)?,
             rhgt: file_name(&rhgt_path)?,
+            rdem: file_name(&rdem_path)?,
         });
         set_progress(
             s,
@@ -585,6 +605,17 @@ async fn fusion(
         )
     }
     let signature = fusion_signature(&paths, req.target_agl_m)?;
+    let (terrain_metadata, terrain_file) = if let Some(path) = paths.first() {
+        let terrain_path = path.with_extension("rdem");
+        let metadata = validate_envelope(&terrain_path, RDEM_MAGIC).map_err(|_| {
+            public_error(StatusCode::UNPROCESSABLE_ENTITY, "terrain coverage missing")
+        })?;
+        let name = file_name(&terrain_path)
+            .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "terrain path failed"))?;
+        (Some(metadata), Some(name))
+    } else {
+        (None, None)
+    };
     let fusion_id = uuid_from_hash(&signature);
     let directory = s.result_directory.clone();
     let target = req.target_agl_m;
@@ -647,7 +678,13 @@ async fn fusion(
         .collect::<Vec<_>>();
     atomic_bytes(&dataset.join("min-detection-height.bin"), &minimum_bytes)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset storage failed"))?;
-    let manifest = serde_json::json!({"dataset_id":id_for_worker,"version":1,"date":Utc::now().format("%Y-%m-%d").to_string(),"target_agl_m":target,"radar_ids":unique,"metadata":metadata});
+    if metadata.as_ref() != terrain_metadata.as_ref() {
+        return Err(public_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "terrain grid is incompatible",
+        ));
+    }
+    let manifest = serde_json::json!({"dataset_id":id_for_worker,"version":1,"date":Utc::now().format("%Y-%m-%d").to_string(),"target_agl_m":target,"radar_ids":unique,"metadata":metadata,"terrain_rdem":terrain_file});
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "manifest failed"))?;
     atomic_bytes(&dataset.join("metadata.json"), &manifest_bytes)
@@ -727,18 +764,22 @@ fn cached_job_valid(directory: &std::path::Path, request_hash: &str) -> bool {
     manifest.artifacts.iter().all(|artifact| {
         let rcov = directory.join(&artifact.rcov);
         let rhgt = directory.join(&artifact.rhgt);
+        let rdem = directory.join(&artifact.rdem);
         if rcov.parent() != Some(directory)
             || rhgt.parent() != Some(directory)
+            || rdem.parent() != Some(directory)
             || rcov.file_name().and_then(|v| v.to_str()) != Some(artifact.rcov.as_str())
             || rhgt.file_name().and_then(|v| v.to_str()) != Some(artifact.rhgt.as_str())
+            || rdem.file_name().and_then(|v| v.to_str()) != Some(artifact.rdem.as_str())
         {
             return false;
         }
         match (
             validate_envelope(&rcov, RCOV_MAGIC),
             validate_envelope(&rhgt, RHGT_MAGIC),
+            validate_envelope(&rdem, RDEM_MAGIC),
         ) {
-            (Ok(a), Ok(b)) => a == b,
+            (Ok(a), Ok(b), Ok(c)) => a == b && b == c,
             _ => false,
         }
     })
@@ -818,6 +859,22 @@ fn cached_fusion_response(
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "dataset cache failed"))?;
     let manifest: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset cache"))?;
+    if !req.radar_ids.is_empty() {
+        let Some(terrain_file) = manifest["terrain_rdem"].as_str() else {
+            return Ok(None);
+        };
+        if std::path::Path::new(terrain_file)
+            .file_name()
+            .and_then(|value| value.to_str())
+            != Some(terrain_file)
+            || !dataset
+                .parent()
+                .and_then(std::path::Path::parent)
+                .is_some_and(|results| results.join(terrain_file).is_file())
+        {
+            return Ok(None);
+        }
+    }
     let required = [
         "ground.bin".to_owned(),
         "agl-30m.bin".to_owned(),
@@ -900,6 +957,78 @@ async fn wmts_capabilities(
     let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Capabilities xmlns=\"http://www.opengis.net/wmts/1.0\" xmlns:ows=\"http://www.opengis.net/ows/1.1\" version=\"1.0.0\"><Contents>{layers}<TileMatrixSet><ows:Identifier>radial</ows:Identifier><ows:SupportedCRS>{crs}</ows:SupportedCRS>{matrices}</TileMatrixSet></Contents></Capabilities>");
     response_bytes(StatusCode::OK, "application/xml", xml.into_bytes(), None)
 }
+
+#[derive(serde::Deserialize)]
+struct SampleQuery {
+    col: u32,
+    row: u32,
+}
+
+async fn wmts_sample(
+    State(s): State<App>,
+    Path((dataset, version, date)): Path<(Uuid, u16, String)>,
+    Query(query): Query<SampleQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let dir = dataset_directory(&s, dataset, version, &date)?;
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("metadata.json"))
+            .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?,
+    )
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset"))?;
+    let width = manifest["metadata"]["width"].as_u64().unwrap_or(0) as usize;
+    let height = manifest["metadata"]["height"].as_u64().unwrap_or(0) as usize;
+    let col = query.col as usize;
+    let row = query.row as usize;
+    if col >= width || row >= height {
+        return Err(public_error(StatusCode::NOT_FOUND, "sample outside grid"));
+    }
+    let index = row * width + col;
+    let terrain_file = manifest["terrain_rdem"]
+        .as_str()
+        .ok_or_else(|| public_error(StatusCode::NOT_FOUND, "terrain samples unavailable"))?;
+    if std::path::Path::new(terrain_file)
+        .file_name()
+        .and_then(|v| v.to_str())
+        != Some(terrain_file)
+    {
+        return Err(public_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "invalid terrain path",
+        ));
+    }
+    let terrain_path = s.result_directory.join(terrain_file);
+    let minimum_path = dir.join("min-detection-height.bin");
+    let (terrain, minimum) = tokio::task::spawn_blocking(move || {
+        let terrain = read_rdem_value(&terrain_path, index)?;
+        let minimum = read_u16_value(&minimum_path, index)?;
+        Ok::<_, coverage_storage::StorageError>((terrain, minimum))
+    })
+    .await
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "sample worker failed"))?
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "sample read failed"))?;
+    Ok(Json(serde_json::json!({
+        "col": col,
+        "row": row,
+        "terrain_elevation_amsl_m": terrain,
+        "minimum_detection_agl_m": minimum.filter(|value| *value != u16::MAX),
+    })))
+}
+
+fn read_u16_value(
+    path: &std::path::Path,
+    index: usize,
+) -> Result<Option<u16>, coverage_storage::StorageError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let offset = index
+        .checked_mul(2)
+        .ok_or(coverage_storage::StorageError::Format("sample index"))?;
+    file.seek(SeekFrom::Start(offset as u64))?;
+    let mut bytes = [0u8; 2];
+    file.read_exact(&mut bytes)?;
+    Ok(Some(u16::from_le_bytes(bytes)))
+}
+
 fn xml_escape(v: &str) -> String {
     v.replace('&', "&amp;")
         .replace('<', "&lt;")

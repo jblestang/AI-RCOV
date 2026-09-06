@@ -7,6 +7,7 @@ use std::{
 };
 pub const RCOV_MAGIC: [u8; 4] = *b"RCOV";
 pub const RHGT_MAGIC: [u8; 4] = *b"RHGT";
+pub const RDEM_MAGIC: [u8; 4] = *b"RDEM";
 pub const VERSION: u16 = 1;
 pub const NO_DATA: u16 = u16::MAX;
 const PREFIX: usize = 18;
@@ -92,6 +93,80 @@ pub fn write_rhgt(
         .flat_map(|v| v.to_le_bytes())
         .collect::<Vec<_>>();
     write_atomic(path, RHGT_MAGIC, m, &p, sync)
+}
+
+/// Persists signed terrain elevations without materializing a second payload.
+pub fn write_rdem(
+    path: &Path,
+    m: &Metadata,
+    elevations: &[Option<f32>],
+    sync: bool,
+) -> Result<(), StorageError> {
+    if elevations.len() != m.cells()? {
+        return Err(StorageError::Format("rdem cells"));
+    }
+    let json = serde_json::to_vec(m)?;
+    let payload_len = elevations
+        .len()
+        .checked_mul(2)
+        .ok_or(StorageError::Format("payload too large"))?;
+    let tmp = temp_path(path);
+    let result = (|| {
+        let mut f = File::create(&tmp)?;
+        f.write_all(&RDEM_MAGIC)?;
+        f.write_all(&VERSION.to_le_bytes())?;
+        f.write_all(
+            &u32::try_from(json.len())
+                .map_err(|_| StorageError::Format("header too large"))?
+                .to_le_bytes(),
+        )?;
+        f.write_all(&(payload_len as u64).to_le_bytes())?;
+        f.write_all(&json)?;
+        let mut hash = hasher(RDEM_MAGIC, &json);
+        let mut buffer = Vec::with_capacity(BLOCK);
+        for elevation in elevations {
+            let value = elevation.map_or(i16::MIN, |v| {
+                v.round().clamp(i16::MIN as f32 + 1.0, i16::MAX as f32) as i16
+            });
+            buffer.extend_from_slice(&value.to_le_bytes());
+            if buffer.len() == BLOCK {
+                f.write_all(&buffer)?;
+                hash.update(&buffer);
+                buffer.clear();
+            }
+        }
+        if !buffer.is_empty() {
+            f.write_all(&buffer)?;
+            hash.update(&buffer);
+        }
+        f.write_all(hash.finalize().as_bytes())?;
+        f.flush()?;
+        if sync {
+            f.sync_all()?;
+        }
+        drop(f);
+        fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    result
+}
+
+pub fn read_rdem_value(path: &Path, index: usize) -> Result<Option<i16>, StorageError> {
+    let mut r = BufReader::new(File::open(path)?);
+    let h = read_header(&mut r, RDEM_MAGIC)?;
+    let cells = h.metadata.cells()?;
+    if index >= cells || h.payload_len != cells as u64 * 2 {
+        return Err(StorageError::Format("rdem index"));
+    }
+    let offset = PREFIX as u64 + h.json.len() as u64 + index as u64 * 2;
+    r.seek(SeekFrom::Start(offset))?;
+    let mut bytes = [0u8; 2];
+    r.read_exact(&mut bytes)?;
+    let value = i16::from_le_bytes(bytes);
+    Ok((value != i16::MIN).then_some(value))
 }
 pub fn write_atomic(
     path: &Path,
@@ -411,6 +486,18 @@ mod tests {
         let c = d.join("a.rcov");
         write_rcov(&c, &meta("a"), &[10], false).unwrap();
         assert_eq!(read(&c, RCOV_MAGIC).unwrap().1, 10u64.to_le_bytes());
+        let terrain = d.join("a.rdem");
+        write_rdem(
+            &terrain,
+            &meta("a"),
+            &[Some(-12.0), Some(345.0), None, Some(1.0)],
+            false,
+        )
+        .unwrap();
+        assert_eq!(validate(&terrain, RDEM_MAGIC).unwrap(), meta("a"));
+        assert_eq!(read_rdem_value(&terrain, 0).unwrap(), Some(-12));
+        assert_eq!(read_rdem_value(&terrain, 1).unwrap(), Some(345));
+        assert_eq!(read_rdem_value(&terrain, 2).unwrap(), None);
         fs::remove_dir_all(d).unwrap()
     }
     #[test]

@@ -73,6 +73,9 @@ incorrect magic, odd LOD dimensions, XML escaping and PNG signatures.
 The end-to-end validator enumerates every advertised matrix dimension and
 downloads every row/column for every standard and requested AGL layer with
 bounded concurrency; its HTML preview exposes one sample tile per LOD.
+Terrain elevations are persisted as signed, checksummed `.rdem` envelopes.
+The WMTS-adjacent sample endpoint returns exact SRTM elevation in metres AMSL
+and minimum detection height in metres AGL for interactive tooltips.
 The dependency-free standalone benchmark now imports the production LOS modules,
 generates minimum heights, merges bitsets, reports geometry/surface/memory/hash,
 and was actually executed at 400 km / 90 m. One local LOS-v2 iteration measured
