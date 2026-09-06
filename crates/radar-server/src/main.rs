@@ -89,7 +89,7 @@ async fn main() {
             get(wmts_capabilities),
         )
         .route(
-            "/wmts/{dataset}/{version}/{date}/{layer}/{z}/{row}/{col}.png",
+            "/wmts/{dataset}/{version}/{date}/{layer}/{z}/{row}/{tile}",
             get(wmts_tile),
         )
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
@@ -686,17 +686,22 @@ fn xml_escape(v: &str) -> String {
 }
 async fn wmts_tile(
     State(s): State<App>,
-    Path((dataset, version, date, layer, z, row, col)): Path<(
+    Path((dataset, version, date, layer, z, row, tile)): Path<(
         Uuid,
         u16,
         String,
         String,
         u8,
         u32,
-        u32,
+        String,
     )>,
     headers: HeaderMap,
 ) -> ApiResult<Response> {
+    let col = tile
+        .strip_suffix(".png")
+        .ok_or_else(|| public_error(StatusCode::BAD_REQUEST, "tile suffix"))?
+        .parse::<u32>()
+        .map_err(|_| public_error(StatusCode::BAD_REQUEST, "tile column"))?;
     let dir = dataset_directory(&s, dataset, version, &date)?;
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(dir.join("metadata.json"))

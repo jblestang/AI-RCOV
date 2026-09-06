@@ -69,6 +69,12 @@ and was actually executed at 400 km / 90 m. One local iteration measured 2.852 s
 (27.71 M nominal cells-radar/s), 95,770 visible cells and deterministic hash
 `fc7e022d262c6e91`; this is an observation, not a universal baseline or claimed
 speedup.
+The external SRTM path was verified end to end with `N45E002.hgt.gz`: a native
+job downloaded and cached the 11,330,155-byte compressed tile, decoded it,
+completed LOS, and wrote `.rcov`/`.rhgt`. After a full server restart, a second
+job completed with the cache file size and modification timestamp unchanged,
+proving persistent disk-cache reuse. WMTS `.png` routes use a full `{tile}`
+segment and strictly parse the required suffix, as mandated by Axum 0.8.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the

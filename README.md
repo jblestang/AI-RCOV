@@ -58,6 +58,11 @@ The server listens on `RADAR_BIND` (`0.0.0.0:8080` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
 
+SRTM downloads are performed only by `radar-server`. Set `RADAR_SRTM_CACHE` to
+a persistent directory (default `data/srtm`); compressed `.hgt.gz` files survive
+server restarts and are decoded locally on subsequent jobs. Client-provided
+download URLs are never accepted.
+
 Set the repository variable `RADAR_API_URL` to the public HTTPS server origin
 before enabling GitHub Pages. The Pages workflow injects it into the runtime
 meta tag and packages the Rust-generated WebAssembly. The container workflow
