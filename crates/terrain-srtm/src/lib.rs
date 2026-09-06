@@ -2,10 +2,67 @@ use std::{collections::BTreeMap, io::Read, sync::Arc};
 mod cache;
 pub use cache::{SrtmCache, SrtmCacheConfig};
 pub const VOID: i16 = -32768;
+const EARTH_RADIUS_M: f64 = 6_371_000.0;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TileCoordinate {
     pub lat: i16,
     pub lon: i16,
+}
+
+/// Returns every one-degree SRTM tile intersecting a conservative geodesic
+/// bounding box around a radar. This is preparation only; LOS loops operate on
+/// the subsequently projected metric grid.
+pub fn tiles_for_radius(
+    latitude: f64,
+    longitude: f64,
+    range_m: f64,
+) -> Result<Vec<TileCoordinate>, TerrainError> {
+    if !(-90.0..=90.0).contains(&latitude)
+        || !(-180.0..=180.0).contains(&longitude)
+        || !(0.0..=1_000_000.0).contains(&range_m)
+    {
+        return Err(TerrainError::Coordinates);
+    }
+    let angular = range_m / EARTH_RADIUS_M;
+    let min_lat = (latitude.to_radians() - angular).max(-std::f64::consts::FRAC_PI_2);
+    let max_lat = (latitude.to_radians() + angular).min(std::f64::consts::FRAC_PI_2);
+    let touches_pole =
+        min_lat <= -std::f64::consts::FRAC_PI_2 || max_lat >= std::f64::consts::FRAC_PI_2;
+    let lon_delta = if touches_pole {
+        std::f64::consts::PI
+    } else {
+        (angular.sin() / latitude.to_radians().cos().abs())
+            .clamp(-1.0, 1.0)
+            .asin()
+    };
+    let min_lat_tile = min_lat.to_degrees().floor() as i16;
+    let max_lat_tile = max_lat.to_degrees().floor().min(89.0) as i16;
+    let mut result = Vec::new();
+    for lat in min_lat_tile..=max_lat_tile {
+        if lon_delta >= std::f64::consts::PI {
+            for lon in -180..=179 {
+                result.push(TileCoordinate { lat, lon });
+            }
+        } else {
+            let west = longitude.to_radians() - lon_delta;
+            let east = longitude.to_radians() + lon_delta;
+            for lon in -180..=179 {
+                let center = (lon as f64 + 0.5).to_radians();
+                let relative = (center - longitude.to_radians() + std::f64::consts::PI)
+                    .rem_euclid(std::f64::consts::TAU)
+                    - std::f64::consts::PI;
+                let half_tile = 0.5f64.to_radians();
+                if relative >= west - longitude.to_radians() - half_tile
+                    && relative <= east - longitude.to_radians() + half_tile
+                {
+                    result.push(TileCoordinate { lat, lon });
+                }
+            }
+        }
+    }
+    result.sort();
+    result.dedup();
+    Ok(result)
 }
 #[derive(Debug)]
 pub struct HgtTile {
@@ -31,6 +88,8 @@ pub enum TerrainError {
     Network(String),
     #[error("download exceeded configured size")]
     TooLarge,
+    #[error("invalid geographic coordinates or range")]
+    Coordinates,
 }
 impl HgtTile {
     pub fn decode(coordinate: TileCoordinate, bytes: &[u8]) -> Result<Self, TerrainError> {
@@ -125,5 +184,15 @@ mod tests {
         for h in hs {
             assert_eq!(h.join().unwrap(), Some(1));
         }
+    }
+    #[test]
+    fn radius_loads_multiple_tiles_and_crosses_dateline() {
+        let local = tiles_for_radius(45.0, 2.0, 400_000.0).unwrap();
+        assert!(local.len() > 1);
+        assert!(local.iter().any(|c| c.lat == 41));
+        assert!(local.iter().any(|c| c.lat == 48));
+        let dateline = tiles_for_radius(0.0, 179.8, 100_000.0).unwrap();
+        assert!(dateline.iter().any(|c| c.lon == 179));
+        assert!(dateline.iter().any(|c| c.lon == -180));
     }
 }

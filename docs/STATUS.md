@@ -15,9 +15,13 @@ limits. It atomically stores compressed tiles, shares complete decoded tiles as
 validates grids and checksums while reading one 64 KiB block per layer; empty
 active selections and saturating counts are supported. Format tests cover
 round-trips, lookup by configuration hash, corruption, truncation and mismatches.
+Geodesic range preparation enumerates every intersecting one-degree tile and
+handles antimeridian crossings. The optional native Rayon feature uses a bounded
+pool and limits simultaneous per-radar workspaces by an explicit memory budget;
+tests assert byte-identical sequential and parallel outputs.
 
-Not yet production-complete: geographic extent-to-tile enumeration,
-reprojection/mosaic resampling, Rayon work scheduling and workspace pool,
+Not yet production-complete: reprojection/mosaic resampling, reusable workspace
+pool and internal sector parallelism for one or two radars,
 full job lifecycle/cancellation, complete WMTS REST
 routes/capabilities/cache, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m

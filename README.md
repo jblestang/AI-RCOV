@@ -43,7 +43,7 @@ the core.
 ```sh
 cargo fmt --all --check
 cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 rustc --edition=2021 -O benchmark/standalone/main.rs -o /tmp/radial-bench
 RADAR_BENCH_CELL_M=90 /tmp/radial-bench
 cargo run -p radar-server
