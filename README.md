@@ -5,8 +5,8 @@ native server owns every scientific and SRTM operation; the WebAssembly client
 only edits radar definitions, starts jobs and displays server-produced map tiles
 and profiles.
 
-> Status: foundational implementation. The LOS core, ring traversal, angular
-> lookup, bitset fusion, HGT decoding, persistent envelope, PNG/LOD primitives,
+> Status: foundational implementation. The LOS core, dynamic ray traversal,
+> bitset fusion, HGT decoding, persistent envelope, PNG/LOD primitives,
 > API contracts and server shell are implemented and tested. Network SRTM
 > acquisition, complete asynchronous job execution, full WMTS routing and the
 > production WASM map client remain integration work. See `docs/STATUS.md`.
@@ -26,7 +26,7 @@ the core.
 
 ## Workspace
 
-- `coverage-core`: dependency-free LOS, clipped rings, angular bins, profiles,
+- `coverage-core`: dependency-free LOS, distance-ordered dynamic rays, profiles,
   bitsets and fusion.
 - `terrain-srtm`: bounded SRTM downloading, two-level cache, strict
   SRTM-1/SRTM-3 HGT decoding and immutable shared mosaics.
@@ -36,7 +36,7 @@ the core.
 - `radar-wmts`: semantic LOD reducers, PNG and ETag primitives.
 - `radar-server`: bounded HTTP entry point.
 - `radar-web`: presentation-only WASM boundary.
-- `benchmark/standalone`: offline deterministic ring/LOS hot-loop benchmark.
+- `benchmark/standalone`: offline deterministic ray/LOS hot-loop benchmark.
 
 ## Development
 
@@ -51,8 +51,8 @@ cargo run -p radar-server
 
 The benchmark imports the production scientific source directly and therefore
 cannot silently diverge into a second LOS implementation. On the development
-machine, one 400 km / 90 m iteration completed in 2.852 s with hash
-`fc7e022d262c6e91`; compare performance only with repeated runs on the same CPU.
+machine, one LOS-v2 400 km / 90 m iteration completed in 1.780 s with hash
+`c4138ec3d0639263`; compare performance only with repeated runs on the same CPU.
 
 The server listens on `RADAR_BIND` (`0.0.0.0:8100` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be

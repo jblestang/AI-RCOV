@@ -29,7 +29,6 @@ fn main() {
     let cell = variable("RADAR_BENCH_CELL_M", 90u32);
     let radars = variable("RADAR_BENCH_RADARS", 1usize);
     let iterations = variable("RADAR_BENCH_ITERATIONS", 3usize);
-    let sectors_override = variable("RADAR_BENCH_SECTORS_PER_RADAR", 0usize);
     let range = 400_000.;
     let radius = (range / cell as f64).ceil() as usize;
     let dimension = radius * 2 + 1;
@@ -58,11 +57,6 @@ fn main() {
         let mut layers = Vec::new();
         for radar in 0..radars {
             let offset = (radar as isize - (radars as isize - 1) / 2) * (radius as isize / 8);
-            let sectors = if sectors_override == 0 {
-                ((std::f64::consts::TAU * radius as f64).ceil() as usize).max(8)
-            } else {
-                sectors_override
-            };
             let cfg = los::LosConfig {
                 radar_x: (radius as isize + offset) as usize,
                 radar_y: radius,
@@ -70,7 +64,6 @@ fn main() {
                 cell_size_m: cell as f64,
                 range_m: range,
                 effective_earth_k: 4. / 3.,
-                angular_sectors: sectors,
             };
             layers.push(los::compute_coverage(&grid, &cfg).expect("LOS"));
         }

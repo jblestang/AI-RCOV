@@ -104,7 +104,6 @@ mod tests {
             cell_size_m: 1000.,
             range_m: 2000.,
             effective_earth_k: 1e30,
-            angular_sectors: 8,
         };
         let p = compute_profile(&grid, &cfg, 2, 0, 0.).unwrap();
         assert!(!p.visible);

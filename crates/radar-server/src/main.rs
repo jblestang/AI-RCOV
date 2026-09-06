@@ -414,7 +414,6 @@ async fn execute_job(
                     cell_size_m: resolution,
                     range_m: radar_clone.range_m,
                     effective_earth_k: k,
-                    angular_sectors: angular_sectors(radar_clone.range_m, resolution),
                 },
             )
             .map_err(|_| "LOS computation failed".to_owned())
@@ -452,10 +451,6 @@ async fn set_progress(s: &App, id: Uuid, value: f32) {
     if let Some(job) = s.jobs.write().await.get_mut(&id) {
         job.status.progress = value.clamp(0., 1.)
     }
-}
-fn angular_sectors(range: f64, resolution: f64) -> usize {
-    let radius = (range / resolution).ceil();
-    ((std::f64::consts::TAU * radius).ceil() as usize).max(8)
 }
 async fn get_job(State(s): State<App>, Path(id): Path<Uuid>) -> ApiResult<Json<JobStatus>> {
     s.jobs
@@ -555,7 +550,6 @@ async fn profile(
         cell_size_m: distance / steps as f64,
         range_m: distance,
         effective_earth_k: 4. / 3.,
-        angular_sectors: 1,
     };
     let result =
         compute_profile(&grid, &config, steps, 0, query.target_agl_m as f64).map_err(|_| {

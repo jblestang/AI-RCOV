@@ -59,7 +59,6 @@ mod tests {
             cell_size_m: 90.,
             range_m: 180.,
             effective_earth_k: 4. / 3.,
-            angular_sectors: 32,
         }
     }
     #[test]

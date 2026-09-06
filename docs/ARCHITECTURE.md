@@ -17,11 +17,11 @@ calculation timestamp, CRS, origin, source resolution, extent, dimensions,
 range, effective-Earth factor and NoData value. Readers validate magic, version,
 declared lengths and checksum before exposing content.
 
-Square rings are strictly near-to-far. Circle/side intersections bound loop
-intervals before callbacks, eliminating the square-envelope corner callbacks.
-Four side ranges are disjoint and assign each corner once. Angular lookup stores
-the first octant and reconstructs other octants by symmetry; interpolation has
-an error bound and exact `atan2` is used near bin boundaries.
+Angular rays traverse intersected grid cells in increasing distance using
+cell-boundary DDA. Their angular spacing is derived from one grid cell at the
+maximum range, so nearby terrain cells affect multiple rays through their full
+footprint. Each ray owns an independent horizon and duplicate cell observations
+retain the conservative maximum required AGL.
 
 Terrain preparation uses a radar-centred spherical azimuthal-equidistant
 projection (`+proj=aeqd`, `R=6371000`). Unlike a longitude/cos(latitude)

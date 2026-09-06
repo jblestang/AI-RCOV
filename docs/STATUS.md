@@ -2,8 +2,8 @@
 
 This first repository revision is deliberately honest about incomplete work.
 
-Implemented: network-free LOS core, `k` correction, minimum AGL, unique clipped
-rings, angular lookup/exact fallback, bitsets and saturating fusion, profiles,
+Implemented: network-free LOS core, `k` correction, minimum AGL, dynamic
+resolution-derived ray traversal, bitsets and saturating fusion, profiles,
 strict HGT decoding, immutable `Arc<HgtTile>` mosaic, binary envelopes with
 atomic writes/checksum, API DTOs, health/readiness and radar CRUD shell,
 semantic LOD/PNG/ETag primitives, offline benchmark, container and CI skeleton.
@@ -75,9 +75,9 @@ downloads every row/column for every standard and requested AGL layer with
 bounded concurrency; its HTML preview exposes one sample tile per LOD.
 The dependency-free standalone benchmark now imports the production LOS modules,
 generates minimum heights, merges bitsets, reports geometry/surface/memory/hash,
-and was actually executed at 400 km / 90 m. One local iteration measured 2.852 s
-(27.71 M nominal cells-radar/s), 95,770 visible cells and deterministic hash
-`fc7e022d262c6e91`; this is an observation, not a universal baseline or claimed
+and was actually executed at 400 km / 90 m. One local LOS-v2 iteration measured
+1.780 s (44.40 M nominal cells-radar/s), 4,066 ground-visible cells and hash
+`c4138ec3d0639263`; this is an observation, not a universal baseline or claimed
 speedup.
 The external SRTM path was verified end to end with `N45E002.hgt.gz`: a native
 job downloaded and cached the 11,330,155-byte compressed tile, decoded it,
@@ -85,6 +85,9 @@ completed LOS, and wrote `.rcov`/`.rhgt`. After a full server restart, a second
 job completed with the cache file size and modification timestamp unchanged,
 proving persistent disk-cache reuse. WMTS `.png` routes use a full `{tile}`
 segment and strictly parse the required suffix, as mandated by Axum 0.8.
+LOS-v2 was also verified end to end on the real cached SRTM mosaic at 100 km /
+30 m: the validator generated all 6 LODs and 6,965 PNGs. Finest-level inspection
+showed continuous terrain-shaped boundaries without the former angular spokes.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -92,7 +95,7 @@ immutable SRTM mosaic can be resampled into a metric raster at 30, 90 or 180 m.
 SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
-Not yet production-complete: reusable workspace pool and internal sector
+Not yet production-complete: reusable workspace pool and internal ray
 parallelism for one or two radars, live WMTS map/profile widgets, deeper
 integration/property tests, and repeated multi-scenario benchmark baselines. A
 400 km / 30 m run was not attempted because it requires roughly 711 million
