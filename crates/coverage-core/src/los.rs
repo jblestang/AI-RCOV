@@ -1,6 +1,8 @@
 use crate::{apparent_height, for_each_ring_cell, AngularTable, BitSet};
 
 pub const NO_DATA_HEIGHT: u16 = u16::MAX;
+/// Increment whenever LOS semantics change in a way that invalidates persisted results.
+pub const LOS_ALGORITHM_VERSION: u16 = 1;
 
 #[derive(Clone, Debug)]
 pub struct Grid {

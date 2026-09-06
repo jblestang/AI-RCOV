@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
-use coverage_core::{compute_coverage, compute_profile, Grid, LosConfig};
+use coverage_core::{compute_coverage, compute_profile, Grid, LosConfig, LOS_ALGORITHM_VERSION};
 use coverage_storage::{
     merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, validate as validate_envelope,
     write_rcov, write_rhgt, Metadata, RCOV_MAGIC, RHGT_MAGIC,
@@ -343,6 +343,7 @@ async fn execute_job(
         let radar_x = ((radar_x_m - origin[0]) / resolution).round() as usize;
         let radar_y = ((bounds[3] - radar_y_m) / resolution).round() as usize;
         let config_json = serde_json::to_vec(&serde_json::json!({
+            "los_algorithm_version": LOS_ALGORITHM_VERSION,
             "radar": radar,
             "resolution_m": request.resolution_m,
             "effective_earth_k": request.effective_earth_k,
@@ -357,6 +358,7 @@ async fn execute_job(
         let config_hash = blake3::hash(&config_json).to_hex().to_string();
         let meta = Metadata {
             radar_id: radar.id.to_string(),
+            los_algorithm_version: LOS_ALGORITHM_VERSION,
             radar_config_hash: config_hash,
             terrain_hash: terrain_digest.clone(),
             calculated_at: now(),
@@ -705,7 +707,13 @@ fn request_hash(request: &JobRequest) -> ApiResult<String> {
 }
 
 fn job_request_hash(request: &JobRequest) -> Result<String, serde_json::Error> {
-    serde_json::to_vec(request).map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+    serde_json::to_vec(request).map(|bytes| {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"radial-los-job");
+        hasher.update(&LOS_ALGORITHM_VERSION.to_le_bytes());
+        hasher.update(&bytes);
+        hasher.finalize().to_hex().to_string()
+    })
 }
 
 fn job_cache_path(directory: &std::path::Path, request_hash: &str) -> std::path::PathBuf {
@@ -762,6 +770,7 @@ fn file_name(path: &std::path::Path) -> Result<String, String> {
 
 fn same_coverage_identity(a: &Metadata, b: &Metadata) -> bool {
     a.radar_id == b.radar_id
+        && a.los_algorithm_version == b.los_algorithm_version
         && a.radar_config_hash == b.radar_config_hash
         && a.terrain_hash == b.terrain_hash
         && a.crs == b.crs

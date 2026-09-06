@@ -33,6 +33,9 @@ atomic request manifest; after restart, valid checksummed artifacts bypass SRTM
 reprojection and LOS. Fusion IDs are deterministically derived from the
 validated input artifacts and target AGL, so identical fusions reuse their
 existing WMTS dataset.
+Coverage metadata and job fingerprints include `LOS_ALGORITHM_VERSION`. Legacy
+unversioned envelopes fail strict metadata decoding, and incrementing the
+constant invalidates job manifests, `.rcov`, `.rhgt`, fusions and WMTS datasets.
 Multi-radar jobs now plan one shared azimuthal-equidistant grid covering the
 union of radar ranges. Terrain samples are allocated once and shared immutably
 between LOS workers; all persisted layers therefore have compatible projection,

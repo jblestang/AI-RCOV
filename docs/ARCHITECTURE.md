@@ -12,7 +12,7 @@ little-endian `u16` values. `65535` is reserved for NoData/out-of-range and real
 heights saturate at `65534`. Writers use a sibling temporary file, flush,
 optional fsync, and atomic rename.
 
-Metadata contains stable radar ID, hashes of radar configuration and terrain,
+Metadata contains stable radar ID, an explicit LOS algorithm version, hashes of radar configuration and terrain,
 calculation timestamp, CRS, origin, source resolution, extent, dimensions,
 range, effective-Earth factor and NoData value. Readers validate magic, version,
 declared lengths and checksum before exposing content.

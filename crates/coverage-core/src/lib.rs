@@ -13,7 +13,10 @@ mod rings;
 
 pub use angle::AngularTable;
 pub use bitset::{merge_counts, BitSet};
-pub use los::{compute_coverage, Coverage, CoverageError, Grid, LosConfig, NO_DATA_HEIGHT};
+pub use los::{
+    compute_coverage, Coverage, CoverageError, Grid, LosConfig, LOS_ALGORITHM_VERSION,
+    NO_DATA_HEIGHT,
+};
 #[cfg(feature = "rayon")]
 pub use parallel::{compute_coverages_bounded, ParallelConfig};
 pub use profile::{compute_profile, ProfilePoint, ProfileResult};

@@ -15,6 +15,7 @@ const BLOCK: usize = 64 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Metadata {
     pub radar_id: String,
+    pub los_algorithm_version: u16,
     pub radar_config_hash: String,
     pub terrain_hash: String,
     pub calculated_at: String,
@@ -371,6 +372,7 @@ mod tests {
     fn meta(id: &str) -> Metadata {
         Metadata {
             radar_id: id.into(),
+            los_algorithm_version: 1,
             radar_config_hash: format!("hash-{id}"),
             terrain_hash: "terrain".into(),
             calculated_at: "2026-09-06T00:00:00Z".into(),
@@ -478,5 +480,15 @@ mod tests {
             Err(StorageError::Format("version"))
         ));
         fs::remove_dir_all(d).unwrap()
+    }
+
+    #[test]
+    fn rejects_legacy_metadata_without_los_algorithm_version() {
+        let mut value = serde_json::to_value(meta("legacy")).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("los_algorithm_version");
+        assert!(serde_json::from_value::<Metadata>(value).is_err());
     }
 }
