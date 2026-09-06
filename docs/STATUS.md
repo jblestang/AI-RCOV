@@ -41,6 +41,9 @@ The REST tile service now publishes fusion metadata and 256 px radar-count PNGs
 at computed detail levels. It validates UUID/version/date/matrix/row/column,
 uses max aggregation, reads only required source rows, emits deterministic ETags,
 honours `If-None-Match` with 304, and sets one-year immutable cache headers.
+It also emits a WMTS 1.0 GetCapabilities document containing the layer, format,
+local metric CRS, matrix dimensions, scales and REST template. Generated PNGs
+are atomically cached by dataset/layer/matrix/row/column.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -49,8 +52,8 @@ SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one or two radars, GetCapabilities and
-non-count WMTS layers, PNG disk cache, browser map and profiles, runtime CORS allow-list,
+pool and internal sector parallelism for one or two radars, non-count WMTS
+layers, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be
 guarded by the future memory scheduler.

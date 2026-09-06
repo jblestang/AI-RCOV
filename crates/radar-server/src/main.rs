@@ -77,6 +77,10 @@ async fn main() {
             get(wmts_metadata),
         )
         .route(
+            "/wmts/{dataset}/{version}/{date}/WMTSCapabilities.xml",
+            get(wmts_capabilities),
+        )
+        .route(
             "/wmts/{dataset}/{version}/{date}/radar-count/{z}/{row}/{col}.png",
             get(wmts_count_tile),
         )
@@ -510,6 +514,39 @@ async fn wmts_metadata(
         .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?;
     response_bytes(StatusCode::OK, "application/json", bytes, None)
 }
+async fn wmts_capabilities(
+    State(s): State<App>,
+    Path((dataset, version, date)): Path<(Uuid, u16, String)>,
+) -> ApiResult<Response> {
+    let dir = dataset_directory(&s, dataset, version, &date)?;
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.join("metadata.json"))
+            .map_err(|_| public_error(StatusCode::NOT_FOUND, "dataset not found"))?,
+    )
+    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "invalid dataset"))?;
+    let meta = &manifest["metadata"];
+    let width = meta["width"].as_u64().unwrap_or(0) as usize;
+    let height = meta["height"].as_u64().unwrap_or(0) as usize;
+    let levels = tile_levels(width, height);
+    let mut matrices = String::new();
+    for z in 0..levels {
+        let factor = 1usize << (levels - 1 - z);
+        matrices.push_str(&format!("<TileMatrix><ows:Identifier>{z}</ows:Identifier><ScaleDenominator>{}</ScaleDenominator><TopLeftCorner>{} {}</TopLeftCorner><TileWidth>256</TileWidth><TileHeight>256</TileHeight><MatrixWidth>{}</MatrixWidth><MatrixHeight>{}</MatrixHeight></TileMatrix>",meta["resolution_m"].as_f64().unwrap_or(90.)*factor as f64/0.00028,meta["extent"][0],meta["extent"][3],width.div_ceil(TILE_SIZE*factor),height.div_ceil(TILE_SIZE*factor)));
+    }
+    let template = format!(
+        "/wmts/{dataset}/{version}/{date}/radar-count/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"
+    );
+    let crs = xml_escape(meta["crs"].as_str().unwrap_or("local metric"));
+    let xml=format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Capabilities xmlns=\"http://www.opengis.net/wmts/1.0\" xmlns:ows=\"http://www.opengis.net/ows/1.1\" version=\"1.0.0\"><Contents><Layer><ows:Title>Radar count</ows:Title><ows:Identifier>radar-count</ows:Identifier><Format>image/png</Format><ResourceURL format=\"image/png\" resourceType=\"tile\" template=\"{template}\"/><TileMatrixSetLink><TileMatrixSet>radial</TileMatrixSet></TileMatrixSetLink></Layer><TileMatrixSet><ows:Identifier>radial</ows:Identifier><ows:SupportedCRS>{crs}</ows:SupportedCRS>{matrices}</TileMatrixSet></Contents></Capabilities>");
+    response_bytes(StatusCode::OK, "application/xml", xml.into_bytes(), None)
+}
+fn xml_escape(v: &str) -> String {
+    v.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
 async fn wmts_count_tile(
     State(s): State<App>,
     Path((dataset, version, date, z, row, col)): Path<(Uuid, u16, String, u8, u32, u32)>,
@@ -537,13 +574,31 @@ async fn wmts_count_tile(
     if col as usize >= matrix_width || row as usize >= matrix_height {
         return Err(public_error(StatusCode::NOT_FOUND, "tile outside matrix"));
     }
-    let path = dir.join("radar-count.bin");
-    let bytes = tokio::task::spawn_blocking(move || {
-        render_count_tile(&path, width, height, factor, row as usize, col as usize)
-    })
-    .await
-    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile worker failed"))?
-    .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile generation failed"))?;
+    let cache = dir
+        .join("tiles")
+        .join("radar-count")
+        .join(z.to_string())
+        .join(row.to_string())
+        .join(format!("{col}.png"));
+    let bytes = if cache.exists() {
+        std::fs::read(&cache)
+            .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?
+    } else {
+        let path = dir.join("radar-count.bin");
+        let generated = tokio::task::spawn_blocking(move || {
+            render_count_tile(&path, width, height, factor, row as usize, col as usize)
+        })
+        .await
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile worker failed"))?
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile generation failed"))?;
+        if let Some(parent) = cache.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?
+        }
+        atomic_bytes(&cache, &generated)
+            .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?;
+        generated
+    };
     let tag = etag(&bytes);
     if headers
         .get(header::IF_NONE_MATCH)
