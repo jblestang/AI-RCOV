@@ -1,12 +1,12 @@
 use axum::{
-    extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    extract::{Path, Query, State},
+    http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::Response,
     routing::{get, post},
     Json, Router,
 };
 use chrono::Utc;
-use coverage_core::{compute_coverage, Grid, LosConfig};
+use coverage_core::{compute_coverage, compute_profile, Grid, LosConfig};
 use coverage_storage::{
     merge_rhgt_counts_streaming, merge_rhgt_minimum_streaming, write_rcov, write_rhgt, Metadata,
 };
@@ -21,7 +21,12 @@ use std::{
 };
 use terrain_srtm::{tiles_for_radius, LocalProjection, MetricRaster, SrtmCache, SrtmCacheConfig};
 use tokio::sync::{RwLock, Semaphore};
-use tower_http::{cors::CorsLayer, limit::RequestBodyLimitLayer};
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    limit::RequestBodyLimitLayer,
+    request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
+    trace::TraceLayer,
+};
 use uuid::Uuid;
 const DEFAULT_MAX_RADARS: usize = 32;
 const DEFAULT_MAX_CELLS: u64 = 100_000_000;
@@ -74,6 +79,7 @@ async fn main() {
         .route("/api/v1/jobs", post(create_job))
         .route("/api/v1/jobs/{id}", get(get_job).delete(cancel_job))
         .route("/api/v1/fusions", post(fusion))
+        .route("/api/v1/profiles/{id}", get(profile))
         .route(
             "/wmts/{dataset}/{version}/{date}/metadata.json",
             get(wmts_metadata),
@@ -87,7 +93,10 @@ async fn main() {
             get(wmts_tile),
         )
         .layer(RequestBodyLimitLayer::new(1024 * 1024))
-        .layer(CorsLayer::permissive())
+        .layer(cors_layer())
+        .layer(PropagateRequestIdLayer::new(request_id_header()))
+        .layer(SetRequestIdLayer::new(request_id_header(), MakeRequestUuid))
+        .layer(TraceLayer::new_for_http())
         .with_state(state);
     let addr = std::env::var("RADAR_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -409,6 +418,90 @@ async fn set_cancelled(s: &App, id: Uuid) {
             job.status.error = None
         }
     }
+}
+#[derive(serde::Deserialize)]
+struct ProfileQuery {
+    latitude: f64,
+    longitude: f64,
+    target_agl_m: u16,
+}
+async fn profile(
+    State(s): State<App>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ProfileQuery>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let radar = s
+        .radars
+        .read()
+        .await
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| public_error(StatusCode::NOT_FOUND, "radar not found"))?;
+    if !(-90.0..=90.0).contains(&query.latitude) || !(-180.0..=180.0).contains(&query.longitude) {
+        return Err(public_error(StatusCode::BAD_REQUEST, "target coordinates"));
+    }
+    let projection = LocalProjection::new(radar.latitude, radar.longitude)
+        .map_err(|_| public_error(StatusCode::BAD_REQUEST, "projection"))?;
+    let (tx, ty) = projection
+        .forward(query.latitude, query.longitude)
+        .map_err(|_| public_error(StatusCode::BAD_REQUEST, "projection"))?;
+    let distance = tx.hypot(ty);
+    if distance > radar.range_m {
+        return Err(public_error(
+            StatusCode::BAD_REQUEST,
+            "target outside radar range",
+        ));
+    }
+    let coordinates = tiles_for_radius(radar.latitude, radar.longitude, radar.range_m)
+        .map_err(|_| public_error(StatusCode::BAD_REQUEST, "terrain extent"))?;
+    let mosaic = s.terrain.prepare_mosaic(&coordinates).await.map_err(|_| {
+        public_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "terrain preparation failed",
+        )
+    })?;
+    let step_m = env_u64("RADAR_PROFILE_STEP_M", 90) as f64;
+    let steps = (distance / step_m).ceil().max(1.) as usize;
+    let mut elevations = Vec::with_capacity(steps + 1);
+    for step in 0..=steps {
+        let f = step as f64 / steps as f64;
+        let (lat, lon) = projection.inverse(tx * f, ty * f).map_err(|_| {
+            public_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "profile projection failed",
+            )
+        })?;
+        elevations.push(
+            mosaic
+                .sample(lat, lon)
+                .map_err(|_| {
+                    public_error(StatusCode::SERVICE_UNAVAILABLE, "profile terrain missing")
+                })?
+                .map(f32::from),
+        )
+    }
+    let grid = Grid::new(steps + 1, 1, elevations)
+        .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "profile grid failed"))?;
+    let config = LosConfig {
+        radar_x: 0,
+        radar_y: 0,
+        antenna_agl_m: radar.antenna_agl_m,
+        cell_size_m: distance / steps as f64,
+        range_m: distance,
+        effective_earth_k: 4. / 3.,
+        angular_sectors: 1,
+    };
+    let result =
+        compute_profile(&grid, &config, steps, 0, query.target_agl_m as f64).map_err(|_| {
+            public_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "profile computation failed",
+            )
+        })?;
+    let points=result.points.into_iter().map(|p|serde_json::json!({"distance_m":p.distance_m,"terrain_m":p.terrain_m,"apparent_terrain_m":p.apparent_terrain_m,"los_height_m":p.los_height_m,"horizon_slope":p.horizon_slope,"target_height_m":p.target_height_m,"is_obstruction":p.is_obstruction,"vertical_margin_m":p.vertical_margin_m})).collect::<Vec<_>>();
+    Ok(Json(
+        serde_json::json!({"radar_id":id,"target":{"latitude":query.latitude,"longitude":query.longitude,"agl_m":query.target_agl_m},"visible":result.visible,"first_obstacle_distance_m":result.first_obstacle_distance_m,"points":points}),
+    ))
 }
 async fn fusion(
     State(s): State<App>,
@@ -831,4 +924,20 @@ fn env_u64(name: &str, default: u64) -> u64 {
         .and_then(|v| v.parse().ok())
         .filter(|v| *v > 0)
         .unwrap_or(default)
+}
+fn request_id_header() -> HeaderName {
+    HeaderName::from_static("x-request-id")
+}
+fn cors_layer() -> CorsLayer {
+    let configured = std::env::var("RADAR_CORS_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost:8080,http://localhost:5173".into());
+    let origins = configured
+        .split(',')
+        .filter_map(|v| v.trim().parse::<HeaderValue>().ok())
+        .collect::<Vec<_>>();
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::list(origins))
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([header::CONTENT_TYPE, request_id_header()])
+        .expose_headers([header::ETAG, request_id_header()])
 }

@@ -48,6 +48,12 @@ Fusion datasets now materialize ground, 30 m, 50 m, 100 m, arbitrary requested
 AGL, radar-count, and best minimum-detection-height products directly from saved
 `.rhgt` files. Boolean/count LOD uses any/max; minimum-height LOD uses min while
 ignoring NoData. GetCapabilities advertises all six standard layers.
+`GET /api/v1/profiles/{radar_id}` builds a server-side terrain transect and
+returns cumulative distance, raw/apparent terrain, LOS line, horizon, requested
+target height, obstruction flags, vertical margin, first obstacle and final
+visibility. Targets outside radar range are rejected. HTTP CORS now uses an
+explicit `RADAR_CORS_ORIGINS` allow-list, and UUID correlation IDs are created,
+traced and propagated in responses.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -56,8 +62,7 @@ SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
 Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one or two radars, browser map and
-profiles, runtime CORS allow-list,
+pool and internal sector parallelism for one or two radars, browser map,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be
 guarded by the future memory scheduler.
