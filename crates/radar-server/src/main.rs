@@ -98,7 +98,7 @@ async fn main() {
         .layer(SetRequestIdLayer::new(request_id_header(), MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
-    let addr = std::env::var("RADAR_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
+    let addr = std::env::var("RADAR_BIND").unwrap_or_else(|_| "0.0.0.0:8100".into());
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("bind server");
@@ -724,15 +724,7 @@ async fn wmts_tile(
     if col as usize >= matrix_width || row as usize >= matrix_height {
         return Err(public_error(StatusCode::NOT_FOUND, "tile outside matrix"));
     }
-    let source = match layer.as_str() {
-        "radar-count" => "radar-count.bin",
-        "ground" => "ground.bin",
-        "agl-30m" => "agl-30m.bin",
-        "agl-50m" => "agl-50m.bin",
-        "agl-100m" => "agl-100m.bin",
-        "min-detection-height" => "min-detection-height.bin",
-        _ => return Err(public_error(StatusCode::BAD_REQUEST, "layer")),
-    };
+    let source = layer_source(&layer)?;
     let cache = dir
         .join("tiles")
         .join(&layer)
@@ -772,6 +764,26 @@ async fn wmts_tile(
         return response_bytes(StatusCode::NOT_MODIFIED, "image/png", Vec::new(), Some(tag));
     }
     response_bytes(StatusCode::OK, "image/png", bytes, Some(tag))
+}
+fn layer_source(layer: &str) -> ApiResult<String> {
+    let fixed = match layer {
+        "radar-count" => Some("radar-count.bin"),
+        "ground" => Some("ground.bin"),
+        "agl-30m" => Some("agl-30m.bin"),
+        "agl-50m" => Some("agl-50m.bin"),
+        "agl-100m" => Some("agl-100m.bin"),
+        "min-detection-height" => Some("min-detection-height.bin"),
+        _ => None,
+    };
+    if let Some(name) = fixed {
+        return Ok(name.into());
+    }
+    let height = layer
+        .strip_prefix("agl-")
+        .and_then(|v| v.strip_suffix('m'))
+        .and_then(|v| v.parse::<u16>().ok())
+        .ok_or_else(|| public_error(StatusCode::BAD_REQUEST, "layer"))?;
+    Ok(format!("agl-{height}m.bin"))
 }
 fn dataset_directory(s: &App, id: Uuid, version: u16, date: &str) -> ApiResult<std::path::PathBuf> {
     if version != 1
@@ -927,7 +939,7 @@ fn request_id_header() -> HeaderName {
 }
 fn cors_layer() -> CorsLayer {
     let configured = std::env::var("RADAR_CORS_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:8080,http://localhost:5173".into());
+        .unwrap_or_else(|_| "http://localhost:8100,http://localhost:5173".into());
     let origins = configured
         .split(',')
         .filter_map(|v| v.trim().parse::<HeaderValue>().ok())
@@ -965,5 +977,11 @@ mod tests {
     #[test]
     fn xml_values_are_escaped() {
         assert_eq!(xml_escape("a&<\"'"), "a&amp;&lt;&quot;&apos;")
+    }
+    #[test]
+    fn custom_agl_layer_is_safe() {
+        assert_eq!(layer_source("agl-75m").unwrap(), "agl-75m.bin");
+        assert!(layer_source("agl-../x").is_err());
+        assert!(layer_source("agl-70000m").is_err());
     }
 }

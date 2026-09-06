@@ -54,7 +54,7 @@ cannot silently diverge into a second LOS implementation. On the development
 machine, one 400 km / 90 m iteration completed in 2.852 s with hash
 `fc7e022d262c6e91`; compare performance only with repeated runs on the same CPU.
 
-The server listens on `RADAR_BIND` (`0.0.0.0:8080` by default). Compile the web
+The server listens on `RADAR_BIND` (`0.0.0.0:8100` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
 
@@ -78,3 +78,27 @@ production. Immutable WMTS URLs include dataset/version/date, enabling one-year
 cache headers without stale overwrites.
 
 Dual licensed under MIT or Apache-2.0.
+
+## Validation bout-en-bout
+
+Avec le serveur accessible sur le port 8100, exécutez :
+
+```sh
+RADIAL_API_URL=http://127.0.0.1:8100 scripts/validate-e2e.sh
+```
+
+Le script attend health/readiness, crée un radar, déclenche le téléchargement
+SRTM et le LOS, attend le job, crée une fusion, télécharge metadata et
+GetCapabilities, puis sauvegarde et vérifie les PNG `ground`, `agl-30m`,
+`agl-50m`, `agl-100m`, hauteur personnalisée (75 m par défaut),
+`min-detection-height` et `radar-count`. Il vérifie également ETag/304.
+
+Les résultats sont placés dans `validation-output/`. Pour un essai rapide :
+
+```sh
+RADIAL_API_URL=http://127.0.0.1:8100 \
+RADIAL_RANGE_M=1000 \
+RADIAL_RESOLUTION_M=180 \
+RADIAL_TARGET_AGL_M=75 \
+scripts/validate-e2e.sh
+```

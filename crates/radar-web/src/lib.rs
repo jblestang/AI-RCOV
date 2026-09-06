@@ -2,7 +2,7 @@
 //! intentionally absent from this crate.
 pub fn configured_api_url() -> String {
     option_env!("RADAR_API_URL")
-        .unwrap_or("http://localhost:8080")
+        .unwrap_or("http://localhost:8100")
         .to_owned()
 }
 
