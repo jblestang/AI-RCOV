@@ -23,7 +23,12 @@ Four side ranges are disjoint and assign each corner once. Angular lookup stores
 the first octant and reconstructs other octants by symmetry; interpolation has
 an error bound and exact `atan2` is used near bin boundaries.
 
+Terrain preparation uses a radar-centred spherical azimuthal-equidistant
+projection (`+proj=aeqd`, `R=6371000`). Unlike a longitude/cos(latitude)
+approximation, this preserves distance from the radar centre over the complete
+400 km disk. SRTM samples are converted once into an immutable metric raster;
+all hot LOS loops subsequently use integer indices and metre resolution.
+
 For lower WMTS levels, boolean and radar-count layers use `max` (`any` for
 boolean); minimum-height uses `min` while ignoring NoData. Source resolution is
 the maximum level. Edge samples outside odd-sized matrices are NoData.
-

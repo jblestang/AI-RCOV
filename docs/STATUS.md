@@ -26,9 +26,15 @@ bounded semaphore, and can be cancelled. Radar updates preserve the path ID.
 Until terrain reprojection is connected, workers fail explicitly instead of
 publishing a synthetic or scientifically misleading completed coverage.
 
-Not yet production-complete: reprojection/mosaic resampling, reusable workspace
-pool and internal sector parallelism for one or two radars,
-scientific execution inside the job worker, complete WMTS REST
+The terrain crate now implements an explicit spherical azimuthal-equidistant
+local projection centred on the radar. Radial distances are preserved and the
+immutable SRTM mosaic can be resampled into a metric raster at 30, 90 or 180 m.
+SRTM north-to-south row orientation is handled explicitly; missing tiles and
+void values remain NoData rather than becoming zero elevation.
+
+Not yet production-complete: reusable workspace pool and internal sector
+parallelism for one or two radars, scientific execution inside the job worker,
+complete WMTS REST
 routes/capabilities/cache, browser map and profiles, runtime CORS allow-list,
 integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be

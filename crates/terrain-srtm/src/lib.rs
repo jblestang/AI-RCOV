@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, io::Read, sync::Arc};
 mod cache;
+mod projection;
 pub use cache::{SrtmCache, SrtmCacheConfig};
+pub use projection::{LocalProjection, MetricRaster};
 pub const VOID: i16 = -32768;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -90,6 +92,8 @@ pub enum TerrainError {
     TooLarge,
     #[error("invalid geographic coordinates or range")]
     Coordinates,
+    #[error("projection failed")]
+    Projection,
 }
 impl HgtTile {
     pub fn decode(coordinate: TileCoordinate, bytes: &[u8]) -> Result<Self, TerrainError> {
@@ -146,6 +150,25 @@ impl TerrainMosaic {
     }
     pub fn is_empty(&self) -> bool {
         self.tiles.is_empty()
+    }
+    pub fn sample(&self, latitude: f64, longitude: f64) -> Result<Option<i16>, TerrainError> {
+        if !(-90.0..=90.0).contains(&latitude) || !(-180.0..=180.0).contains(&longitude) {
+            return Err(TerrainError::Coordinates);
+        }
+        let lat_tile = latitude.floor().min(89.0) as i16;
+        let lon_tile = if longitude == 180.0 {
+            179
+        } else {
+            longitude.floor() as i16
+        };
+        let tile = self.tile(TileCoordinate {
+            lat: lat_tile,
+            lon: lon_tile,
+        })?;
+        let scale = (tile.dimension - 1) as f64;
+        let row = ((1.0 - (latitude - f64::from(lat_tile))) * scale).round() as usize;
+        let col = ((longitude - f64::from(lon_tile)) * scale).round() as usize;
+        Ok(tile.sample(row.min(tile.dimension - 1), col.min(tile.dimension - 1)))
     }
 }
 const _: fn() = || {
