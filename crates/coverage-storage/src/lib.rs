@@ -436,4 +436,22 @@ mod tests {
         ));
         fs::remove_dir_all(d).unwrap()
     }
+    #[test]
+    fn rejects_magic_and_unknown_version() {
+        let d = dir();
+        let p = d.join("a.rhgt");
+        write_rhgt(&p, &meta("a"), &[0; 4], false).unwrap();
+        assert!(matches!(
+            read(&p, RCOV_MAGIC),
+            Err(StorageError::Format("magic"))
+        ));
+        let mut bytes = fs::read(&p).unwrap();
+        bytes[4..6].copy_from_slice(&99u16.to_le_bytes());
+        fs::write(&p, bytes).unwrap();
+        assert!(matches!(
+            read(&p, RHGT_MAGIC),
+            Err(StorageError::Format("version"))
+        ));
+        fs::remove_dir_all(d).unwrap()
+    }
 }

@@ -283,7 +283,7 @@ async fn execute_job(
         s.max_cells as usize,
     )
     .map_err(|_| "common grid exceeds limits or cannot be projected".to_owned())?;
-    let terrain_digest = terrain_hash(&coordinates);
+    let terrain_digest = mosaic.content_hash();
     let shared_elevations: Arc<[Option<f32>]> = raster.elevations_m.clone().into();
     for (index, radar) in request.radars.iter().enumerate() {
         if cancelled.load(Ordering::Acquire) {
@@ -382,14 +382,6 @@ async fn set_progress(s: &App, id: Uuid, value: f32) {
 fn angular_sectors(range: f64, resolution: f64) -> usize {
     let radius = (range / resolution).ceil();
     ((std::f64::consts::TAU * radius).ceil() as usize).max(8)
-}
-fn terrain_hash(coordinates: &[terrain_srtm::TileCoordinate]) -> String {
-    let mut h = blake3::Hasher::new();
-    for c in coordinates {
-        h.update(&c.lat.to_le_bytes());
-        h.update(&c.lon.to_le_bytes());
-    }
-    h.finalize().to_hex().to_string()
 }
 async fn get_job(State(s): State<App>, Path(id): Path<Uuid>) -> ApiResult<Json<JobStatus>> {
     s.jobs
@@ -940,4 +932,33 @@ fn cors_layer() -> CorsLayer {
         .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
         .allow_headers([header::CONTENT_TYPE, request_id_header()])
         .expose_headers([header::ETAG, request_id_header()])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    #[test]
+    fn lod_handles_odd_dimensions() {
+        assert_eq!(tile_levels(256, 256), 1);
+        assert_eq!(tile_levels(257, 255), 2);
+        assert_eq!(tile_levels(8891, 8891), 7)
+    }
+    #[test]
+    fn count_tile_has_png_signature() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("radial-count-{}-{nonce}.bin", std::process::id()));
+        std::fs::write(&path, [0, 1, 2, 3, 4, 5, 6, 7, 8]).unwrap();
+        let png = render_count_tile(&path, 3, 3, 2, 0, 0).unwrap();
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+        std::fs::remove_file(path).unwrap()
+    }
+    #[test]
+    fn xml_values_are_escaped() {
+        assert_eq!(xml_escape("a&<\"'"), "a&amp;&lt;&quot;&apos;")
+    }
 }

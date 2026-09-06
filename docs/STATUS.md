@@ -59,6 +59,9 @@ runtime API origin configuration, and checks server health through browser
 `fetch`; it contains no terrain or LOS dependency. CI compiles the wasm target.
 Separate workflows package/deploy it to GitHub Pages and publish non-root
 multi-architecture server images to GHCR.
+Terrain identity now hashes coordinates, dimensions and every decoded elevation
+sample in stable tile order. Regression tests also cover unknown format versions,
+incorrect magic, odd LOD dimensions, XML escaping and PNG signatures.
 
 The terrain crate now implements an explicit spherical azimuthal-equidistant
 local projection centred on the radar. Radial distances are preserved and the
@@ -66,8 +69,8 @@ immutable SRTM mosaic can be resampled into a metric raster at 30, 90 or 180 m.
 SRTM north-to-south row orientation is handled explicitly; missing tiles and
 void values remain NoData rather than becoming zero elevation.
 
-Not yet production-complete: content-based terrain hashing, reusable workspace
-pool and internal sector parallelism for one or two radars, full interactive map
+Not yet production-complete: reusable workspace pool and internal sector
+parallelism for one or two radars, full interactive map
 bindings, integration/property tests, and production benchmark baselines. A 400 km / 30 m
 run was not attempted because it requires roughly 711 million cells and must be
 guarded by the future memory scheduler.

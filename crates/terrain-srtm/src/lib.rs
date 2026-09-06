@@ -170,6 +170,20 @@ impl TerrainMosaic {
         let col = ((longitude - f64::from(lon_tile)) * scale).round() as usize;
         Ok(tile.sample(row.min(tile.dimension - 1), col.min(tile.dimension - 1)))
     }
+    /// Deterministic hash of tile coordinates, dimensions and every decoded
+    /// elevation sample. Tile order is stable because the mosaic uses BTreeMap.
+    pub fn content_hash(&self) -> String {
+        let mut hash = blake3::Hasher::new();
+        for (coordinate, tile) in &self.tiles {
+            hash.update(&coordinate.lat.to_le_bytes());
+            hash.update(&coordinate.lon.to_le_bytes());
+            hash.update(&(tile.dimension as u64).to_le_bytes());
+            for height in &tile.heights {
+                hash.update(&height.to_le_bytes());
+            }
+        }
+        hash.finalize().to_hex().to_string()
+    }
 }
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -217,5 +231,21 @@ mod tests {
         let dateline = tiles_for_radius(0.0, 179.8, 100_000.0).unwrap();
         assert!(dateline.iter().any(|c| c.lon == 179));
         assert!(dateline.iter().any(|c| c.lon == -180));
+    }
+    #[test]
+    fn content_hash_changes_with_terrain() {
+        let coordinate = TileCoordinate { lat: 0, lon: 0 };
+        let a = TerrainMosaic::new([Arc::new(HgtTile {
+            coordinate,
+            dimension: 1201,
+            heights: vec![1; 1201 * 1201],
+        })]);
+        let b = TerrainMosaic::new([Arc::new(HgtTile {
+            coordinate,
+            dimension: 1201,
+            heights: vec![2; 1201 * 1201],
+        })]);
+        assert_ne!(a.content_hash(), b.content_hash());
+        assert_eq!(a.content_hash(), a.content_hash());
     }
 }

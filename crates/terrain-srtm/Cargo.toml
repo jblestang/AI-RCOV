@@ -9,3 +9,4 @@ thiserror.workspace=true
 reqwest.workspace=true
 tokio.workspace=true
 futures.workspace=true
+blake3.workspace=true
