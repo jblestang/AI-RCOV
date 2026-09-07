@@ -114,10 +114,18 @@ impl MetricRaster {
         m: &TerrainMosaic,
         p: LocalProjection,
         bounds: [f64; 4],
+        coverage_disks: &[[f64; 3]],
         resolution: f64,
         max_cells: usize,
     ) -> Result<Self, TerrainError> {
-        if resolution <= 0. || bounds[2] < bounds[0] || bounds[3] < bounds[1] {
+        if resolution <= 0.
+            || bounds[2] < bounds[0]
+            || bounds[3] < bounds[1]
+            || coverage_disks.is_empty()
+            || coverage_disks
+                .iter()
+                .any(|disk| !disk.iter().all(|value| value.is_finite()) || disk[2] < 0.0)
+        {
             return Err(TerrainError::Projection);
         }
         let width = ((bounds[2] - bounds[0]) / resolution).ceil() as usize + 1;
@@ -131,6 +139,14 @@ impl MetricRaster {
             let y = bounds[3] - row as f64 * resolution;
             for col in 0..width {
                 let x = bounds[0] + col as f64 * resolution;
+                if !coverage_disks.iter().any(|disk| {
+                    let dx = x - disk[0];
+                    let dy = y - disk[1];
+                    dx * dx + dy * dy <= disk[2] * disk[2]
+                }) {
+                    elevations.push(None);
+                    continue;
+                }
                 let (lat, lon) = p.inverse(x, y)?;
                 elevations.push(m.sample(lat, lon)?.map(f32::from));
             }
@@ -171,5 +187,28 @@ mod tests {
         assert_eq!((g.width, g.height), (5, 5));
         assert_eq!(g.elevations_m[12], Some(123.));
         assert_eq!(g.elevations_m[0], None)
+    }
+
+    #[test]
+    fn bounded_raster_does_not_sample_outside_coverage_disks() {
+        let tile = Arc::new(HgtTile {
+            coordinate: TileCoordinate { lat: 45, lon: 2 },
+            dimension: 1201,
+            heights: vec![321; 1201 * 1201],
+        });
+        let mosaic = TerrainMosaic::new([tile]);
+        let projection = LocalProjection::new(45.5, 2.5).unwrap();
+        let raster = MetricRaster::from_bounds(
+            &mosaic,
+            projection,
+            [-200_000.0, -200_000.0, 200_000.0, 200_000.0],
+            &[[0.0, 0.0, 1.0]],
+            200_000.0,
+            9,
+        )
+        .unwrap();
+        assert_eq!(raster.elevations_m[raster.width + 1], Some(321.0));
+        assert_eq!(raster.elevations_m[0], None);
+        assert_eq!(raster.elevations_m[raster.elevations_m.len() - 1], None);
     }
 }

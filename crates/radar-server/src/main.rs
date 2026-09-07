@@ -320,10 +320,15 @@ async fn execute_job(
         .prepare_mosaic(&coordinates)
         .await
         .map_err(|_| "terrain preparation failed".to_owned())?;
+    let coverage_disks = projected
+        .iter()
+        .map(|(radar, (x, y))| [*x, *y, radar.range_m])
+        .collect::<Vec<_>>();
     let raster = MetricRaster::from_bounds(
         &mosaic,
         projection,
         bounds,
+        &coverage_disks,
         request.resolution_m as f64,
         s.max_cells as usize,
     )
