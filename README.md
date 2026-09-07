@@ -27,7 +27,7 @@ the core.
 ## Workspace
 
 - `coverage-core`: dependency-free LOS, distance-ordered dynamic rays, profiles,
-  bitsets and fusion.
+  bitsets, fusion and deterministic Rayon sector parallelism.
 - `terrain-srtm`: bounded SRTM downloading, two-level cache, strict
   SRTM-1/SRTM-3 HGT decoding and immutable shared mosaics.
 - `coverage-storage`: versioned atomic `.rcov` / `.rhgt` envelopes and

@@ -1,5 +1,10 @@
 use crate::{apparent_height, BitSet};
 use std::f64::consts::TAU;
+#[cfg(feature = "rayon")]
+use std::sync::atomic::{AtomicU16, Ordering};
+
+#[cfg(feature = "rayon")]
+use rayon::prelude::*;
 
 pub const NO_DATA_HEIGHT: u16 = u16::MAX;
 /// Increment whenever LOS semantics change in a way that invalidates persisted results.
@@ -98,21 +103,85 @@ pub fn compute_coverage(grid: &Grid, config: &LosConfig) -> Result<Coverage, Cov
     let cells = grid.width * grid.height;
     let mut result = Coverage {
         ground_visible: BitSet::new(cells),
+        #[cfg(feature = "rayon")]
+        minimum_agl_m: Vec::new(),
+        #[cfg(not(feature = "rayon"))]
         minimum_agl_m: vec![NO_DATA_HEIGHT; cells],
     };
+    let initial_rays = 8;
+    #[cfg(feature = "rayon")]
+    {
+        // Zero means unvisited; computed AGL is stored as value + 1. Atomic
+        // max makes overlapping boundary projections deterministic without a
+        // full result grid per worker.
+        let minimum = (0..cells).map(|_| AtomicU16::new(0)).collect::<Vec<_>>();
+        minimum[radar_index].store(1, Ordering::Relaxed);
+        (0..initial_rays).into_par_iter().for_each(|sector| {
+            walk_polar_sector(
+                grid,
+                config,
+                radar_height,
+                sector,
+                initial_rays,
+                |index, agl| {
+                    minimum[index].fetch_max(agl.saturating_add(1), Ordering::Relaxed);
+                },
+            );
+        });
+        result.minimum_agl_m = minimum
+            .into_iter()
+            .map(|value| match value.into_inner() {
+                0 => NO_DATA_HEIGHT,
+                stored => stored - 1,
+            })
+            .collect();
+    }
+    #[cfg(not(feature = "rayon"))]
+    {
+        result.minimum_agl_m[radar_index] = 0;
+        for sector in 0..initial_rays {
+            walk_polar_sector(
+                grid,
+                config,
+                radar_height,
+                sector,
+                initial_rays,
+                |index, agl| {
+                    let stored = &mut result.minimum_agl_m[index];
+                    *stored = if *stored == NO_DATA_HEIGHT {
+                        agl
+                    } else {
+                        (*stored).max(agl)
+                    };
+                },
+            );
+        }
+    }
+    for (index, minimum) in result.minimum_agl_m.iter().enumerate() {
+        if *minimum == 0 {
+            result.ground_visible.set(index);
+        }
+    }
+    Ok(result)
+}
+
+fn walk_polar_sector(
+    grid: &Grid,
+    config: &LosConfig,
+    radar_height: f64,
+    sector: usize,
+    sector_count: usize,
+    mut visit: impl FnMut(usize, u16),
+) {
+    let initial_width = TAU / sector_count as f64;
+    let mut rays = vec![PolarRay {
+        angle: initial_width * sector as f64,
+        width: initial_width,
+        horizon: f64::NEG_INFINITY,
+        last_distance_m: 0.0,
+    }];
     let radius_cells = (config.range_m / config.cell_size_m).floor() as usize;
     let range_squared = config.range_m * config.range_m;
-    result.minimum_agl_m[radar_index] = 0;
-    let initial_rays = 8;
-    let initial_width = TAU / initial_rays as f64;
-    let mut rays = (0..initial_rays)
-        .map(|ray| PolarRay {
-            angle: initial_width * ray as f64,
-            width: initial_width,
-            horizon: f64::NEG_INFINITY,
-            last_distance_m: 0.0,
-        })
-        .collect::<Vec<_>>();
     for radial_cell in 1..=radius_cells {
         let radius_m = radial_cell as f64 * config.cell_size_m;
         subdivide_rays(&mut rays, radius_m, config.cell_size_m);
@@ -156,22 +225,11 @@ pub fn compute_coverage(grid: &Grid, config: &LosConfig) -> Result<Coverage, Cov
             } else {
                 0
             };
-            let stored = &mut result.minimum_agl_m[index];
-            *stored = if *stored == NO_DATA_HEIGHT {
-                agl
-            } else {
-                (*stored).max(agl)
-            };
+            visit(index, agl);
             // Only terrain updates the horizon; target AGL is never fed back.
             ray.horizon = ray.horizon.max(slope);
         }
     }
-    for (index, minimum) in result.minimum_agl_m.iter().enumerate() {
-        if *minimum == 0 {
-            result.ground_visible.set(index);
-        }
-    }
-    Ok(result)
 }
 
 /// Number of adaptive polar sectors at maximum range.

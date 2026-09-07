@@ -40,6 +40,10 @@ Multi-radar jobs now plan one shared azimuthal-equidistant grid covering the
 union of radar ranges. Terrain samples are allocated once and shared immutably
 between LOS workers; all persisted layers therefore have compatible projection,
 origin, extent and dimensions for later selection/fusion.
+With the `rayon` feature used by `radar-server`, each LOS divides its adaptive
+polar walk across eight independent initial sectors. Overlapping projected
+cells are reduced with a deterministic atomic maximum, avoiding per-thread
+copies of the complete result grid.
 `POST /api/v1/fusions` now resolves selected radar UUIDs to server-owned result
 paths, rejects duplicates, streams `.rhgt` layers at the requested integer AGL,
 and atomically creates an immutable, versioned/date-stamped dataset manifest and
