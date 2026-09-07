@@ -80,8 +80,9 @@ The end-to-end validator enumerates every advertised matrix dimension and
 downloads every row/column for every standard and requested AGL layer with
 bounded concurrency; its HTML preview exposes one sample tile per LOD.
 Terrain elevations are persisted as signed, checksummed `.rdem` envelopes.
-The WMTS-adjacent sample endpoint returns exact SRTM elevation in metres AMSL
-and minimum detection height in metres AGL for interactive tooltips.
+The WMTS-adjacent sample endpoint returns exact terrain elevation and minimum
+detection altitude in metres AMSL for interactive tooltips, while retaining
+the internal minimum AGL value used for visibility comparisons.
 Skadi ocean bathymetry is normalized to the mean water surface (`0 m AMSL`)
 before projection and LOS. `TERRAIN_MODEL_VERSION` participates in terrain and
 job fingerprints so this semantic change invalidates all older results.

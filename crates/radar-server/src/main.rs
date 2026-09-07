@@ -1031,11 +1031,16 @@ async fn wmts_sample(
     .await
     .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "sample worker failed"))?
     .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "sample read failed"))?;
+    let minimum_agl = minimum.filter(|value| *value != u16::MAX);
+    let minimum_amsl = terrain
+        .zip(minimum_agl)
+        .map(|(ground, agl)| i32::from(ground) + i32::from(agl));
     Ok(Json(serde_json::json!({
         "col": col,
         "row": row,
         "terrain_elevation_amsl_m": terrain,
-        "minimum_detection_agl_m": minimum.filter(|value| *value != u16::MAX),
+        "minimum_detection_agl_m": minimum_agl,
+        "minimum_detection_amsl_m": minimum_amsl,
     })))
 }
 
