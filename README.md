@@ -92,13 +92,14 @@ Avec le serveur accessible sur le port 8100, exécutez :
 RADIAL_API_URL=http://127.0.0.1:8100 scripts/validate-e2e.sh
 ```
 
-Le scénario par défaut utilise une portée de 100 km et une résolution de 30 m,
+Le scénario par défaut utilise une portée de 400 km et une résolution de 90 m,
 afin de valider réellement plusieurs matrices de tuiles. Utilisez explicitement
 `RADIAL_RANGE_M` et `RADIAL_RESOLUTION_M` pour un test rapide plus petit.
 
-Le script attend health/readiness, crée un radar, déclenche le téléchargement
-SRTM et le LOS, attend le job, crée une fusion, télécharge metadata et
-GetCapabilities, puis sauvegarde et vérifie la pyramide complète de PNG `ground`, `agl-30m`,
+Le script attend health/readiness, crée les radars du mont Agel et du pic de
+Bertagne, déclenche le téléchargement SRTM et le LOS, attend le job, crée une
+fusion, télécharge metadata et GetCapabilities, puis sauvegarde et vérifie la
+pyramide complète de PNG `ground`, `agl-30m`,
 `agl-50m`, `agl-100m`, hauteur personnalisée (75 m par défaut),
 `min-detection-height` et `radar-count` pour tous les LOD, lignes et colonnes.
 Les tuiles sont rangées sous `validation-output/tiles/<layer>/<z>/` et la
@@ -119,9 +120,21 @@ recentrage, grille optionnelle et marqueur du radar avec ses coordonnées. Les
 résultats sont placés dans `validation-output/`.
 
 L'infobulle affiche le cap, la distance, l'altitude terrain SRTM exacte en
-mètres AMSL et la hauteur minimale de détection en mètres AGL. Ces deux valeurs
+mètres AMSL et l'altitude minimale de détection en mètres AMSL. Ces deux valeurs
 sont lues par cellule via `GET /wmts/{dataset}/{version}/{date}/sample` et ne
 sont donc pas quantifiées par le rendu PNG 8 bits.
+
+### Aperçu des résultats
+
+Après la validation, servez le dossier de résultats sur le port 8766 :
+
+```sh
+RADIAL_PREVIEW_PORT=8766 scripts/serve-validation-preview.sh
+```
+
+Ouvrez ensuite `http://localhost:8766/preview.html`. Le serveur API doit rester
+accessible sur l'adresse enregistrée dans le preview. Le serveur local relaie
+les requêtes d'altitude vers cette API, sans configuration CORS supplémentaire.
 
 Pour un essai rapide :
 
