@@ -1314,7 +1314,8 @@ fn request_id_header() -> HeaderName {
 }
 fn cors_layer() -> CorsLayer {
     let configured = std::env::var("RADAR_CORS_ORIGINS").unwrap_or_else(|_| {
-        "http://127.0.0.1:5173,http://localhost:8100,http://localhost:5173".into()
+        "http://127.0.0.1:8765,http://localhost:8765,http://localhost:8100,http://localhost:5173"
+            .into()
     });
     let origins = configured
         .split(',')
