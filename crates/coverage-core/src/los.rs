@@ -3,7 +3,15 @@ use std::f64::consts::TAU;
 
 pub const NO_DATA_HEIGHT: u16 = u16::MAX;
 /// Increment whenever LOS semantics change in a way that invalidates persisted results.
-pub const LOS_ALGORITHM_VERSION: u16 = 2;
+pub const LOS_ALGORITHM_VERSION: u16 = 3;
+
+#[derive(Clone, Copy)]
+struct PolarRay {
+    angle: f64,
+    width: f64,
+    horizon: f64,
+    last_distance_m: f64,
+}
 
 #[derive(Clone, Debug)]
 pub struct Grid {
@@ -92,39 +100,57 @@ pub fn compute_coverage(grid: &Grid, config: &LosConfig) -> Result<Coverage, Cov
         ground_visible: BitSet::new(cells),
         minimum_agl_m: vec![NO_DATA_HEIGHT; cells],
     };
-    let radius_cells = (config.range_m / config.cell_size_m).floor() as i32;
+    let radius_cells = (config.range_m / config.cell_size_m).floor() as usize;
     let range_squared = config.range_m * config.range_m;
     result.minimum_agl_m[radar_index] = 0;
-    let ray_count = dynamic_ray_count(config.range_m, config.cell_size_m);
-    for ray in 0..ray_count {
-        let angle = TAU * ray as f64 / ray_count as f64;
-        let mut horizon = f64::NEG_INFINITY;
-        for_each_ray_cell(radius_cells, angle, |dx, dy| {
+    let initial_rays = 8;
+    let initial_width = TAU / initial_rays as f64;
+    let mut rays = (0..initial_rays)
+        .map(|ray| PolarRay {
+            angle: initial_width * ray as f64,
+            width: initial_width,
+            horizon: f64::NEG_INFINITY,
+            last_distance_m: 0.0,
+        })
+        .collect::<Vec<_>>();
+    for radial_cell in 1..=radius_cells {
+        let radius_m = radial_cell as f64 * config.cell_size_m;
+        subdivide_rays(&mut rays, radius_m, config.cell_size_m);
+        for ray in &mut rays {
+            let dx = (radial_cell as f64 * ray.angle.cos()).round() as i32;
+            let dy = (radial_cell as f64 * ray.angle.sin()).round() as i32;
             let Some(x) = config.radar_x.checked_add_signed(dx as isize) else {
-                return;
+                continue;
             };
             let Some(y) = config.radar_y.checked_add_signed(dy as isize) else {
-                return;
+                continue;
             };
             if x >= grid.width || y >= grid.height {
-                return;
+                continue;
             }
             let distance_squared_cells =
                 i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
             let distance_squared =
                 distance_squared_cells as f64 * config.cell_size_m * config.cell_size_m;
             if distance_squared > range_squared {
-                return;
+                continue;
             }
+            let distance = distance_squared.sqrt();
+            // Rounding a polar sample to the nearest Cartesian centre can
+            // occasionally produce the same or a nearer centre at the next
+            // radial step. Horizons must remain strictly distance ordered.
+            if distance <= ray.last_distance_m {
+                continue;
+            }
+            ray.last_distance_m = distance;
             let index = grid.index(x, y);
             let Some(terrain) = grid.elevations_m[index] else {
-                return;
+                continue;
             };
-            let distance = distance_squared.sqrt();
             let apparent =
                 apparent_height(terrain as f64, distance_squared, config.effective_earth_k);
             let slope = (apparent - radar_height) / distance;
-            let needed = (horizon * distance - (apparent - radar_height)).max(0.0);
+            let needed = (ray.horizon * distance - (apparent - radar_height)).max(0.0);
             let agl = if needed.is_finite() {
                 needed.ceil().clamp(0.0, (u16::MAX - 1) as f64) as u16
             } else {
@@ -137,8 +163,8 @@ pub fn compute_coverage(grid: &Grid, config: &LosConfig) -> Result<Coverage, Cov
                 (*stored).max(agl)
             };
             // Only terrain updates the horizon; target AGL is never fed back.
-            horizon = horizon.max(slope);
-        });
+            ray.horizon = ray.horizon.max(slope);
+        }
     }
     for (index, minimum) in result.minimum_agl_m.iter().enumerate() {
         if *minimum == 0 {
@@ -148,57 +174,46 @@ pub fn compute_coverage(grid: &Grid, config: &LosConfig) -> Result<Coverage, Cov
     Ok(result)
 }
 
-/// Chooses rays so their separation at maximum range is no wider than one cell.
+/// Number of adaptive polar sectors at maximum range.
+///
+/// Sectors are repeatedly bisected, so their transverse width `r * d_theta`
+/// never exceeds half a Cartesian grid cell. The half-cell margin, combined
+/// with a one-cell radial step, ensures nearest-cell projection covers square
+/// cell centres at every bearing.
 pub fn dynamic_ray_count(range_m: f64, cell_size_m: f64) -> usize {
     if range_m <= 0.0 || cell_size_m <= 0.0 {
         return 8;
     }
-    let angular_step = 2.0 * (0.5 * cell_size_m / range_m).atan();
-    (TAU / angular_step).ceil().max(8.0) as usize
+    let mut rays = 8usize;
+    while range_m * (TAU / rays as f64) > cell_size_m * 0.5 {
+        let Some(next) = rays.checked_mul(2) else {
+            return usize::MAX;
+        };
+        rays = next;
+    }
+    rays
 }
 
-/// Traverses every cell intersected by a ray, from the radar to the range edge.
-fn for_each_ray_cell(radius_cells: i32, angle: f64, mut visit: impl FnMut(i32, i32)) {
-    if radius_cells <= 0 {
-        return;
-    }
-    let direction_x = angle.cos();
-    let direction_y = angle.sin();
-    let step_x = if direction_x >= 0.0 { 1 } else { -1 };
-    let step_y = if direction_y >= 0.0 { 1 } else { -1 };
-    let delta_x = if direction_x.abs() < f64::EPSILON {
-        f64::INFINITY
-    } else {
-        direction_x.abs().recip()
-    };
-    let delta_y = if direction_y.abs() < f64::EPSILON {
-        f64::INFINITY
-    } else {
-        direction_y.abs().recip()
-    };
-    let mut boundary_x = 0.5 * delta_x;
-    let mut boundary_y = 0.5 * delta_y;
-    let mut x = 0i32;
-    let mut y = 0i32;
-    let traversal_limit = radius_cells as f64 + std::f64::consts::SQRT_2;
-    while boundary_x.min(boundary_y) <= traversal_limit {
-        if boundary_x < boundary_y {
-            x += step_x;
-            boundary_x += delta_x;
-        } else if boundary_y < boundary_x {
-            y += step_y;
-            boundary_y += delta_y;
-        } else {
-            x += step_x;
-            y += step_y;
-            boundary_x += delta_x;
-            boundary_y += delta_y;
+fn subdivide_rays(rays: &mut Vec<PolarRay>, radius_m: f64, cell_size_m: f64) {
+    while radius_m * rays[0].width > cell_size_m * 0.5 {
+        let mut children = Vec::with_capacity(rays.len() * 2);
+        for ray in rays.drain(..) {
+            let child_width = ray.width * 0.5;
+            let offset = child_width * 0.5;
+            children.push(PolarRay {
+                angle: (ray.angle - offset).rem_euclid(TAU),
+                width: child_width,
+                horizon: ray.horizon,
+                last_distance_m: ray.last_distance_m,
+            });
+            children.push(PolarRay {
+                angle: (ray.angle + offset).rem_euclid(TAU),
+                width: child_width,
+                horizon: ray.horizon,
+                last_distance_m: ray.last_distance_m,
+            });
         }
-        if i64::from(x) * i64::from(x) + i64::from(y) * i64::from(y)
-            <= i64::from(radius_cells) * i64::from(radius_cells)
-        {
-            visit(x, y);
-        }
+        *rays = children;
     }
 }
 
@@ -290,7 +305,9 @@ mod tests {
         let coarse = dynamic_ray_count(100_000.0, 90.0);
         let fine = dynamic_ray_count(100_000.0, 30.0);
         assert!(fine > coarse * 2);
-        assert!((20_940..=20_950).contains(&fine));
+        assert_eq!(fine, 65_536);
+        assert!(100_000.0 * TAU / fine as f64 <= 15.0);
+        assert!(100_000.0 * TAU / (fine / 2) as f64 > 15.0);
     }
 
     #[test]

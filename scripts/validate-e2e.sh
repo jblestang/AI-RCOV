@@ -6,8 +6,8 @@ OUTPUT_DIR="${RADIAL_VALIDATION_DIR:-validation-output}"
 TARGET_AGL_M="${RADIAL_TARGET_AGL_M:-75}"
 LATITUDE="${RADIAL_LATITUDE:-45.2}"
 LONGITUDE="${RADIAL_LONGITUDE:-2.2}"
-RANGE_M="${RADIAL_RANGE_M:-20000}"
-RESOLUTION_M="${RADIAL_RESOLUTION_M:-180}"
+RANGE_M="${RADIAL_RANGE_M:-100000}"
+RESOLUTION_M="${RADIAL_RESOLUTION_M:-30}"
 TIMEOUT_SECONDS="${RADIAL_TIMEOUT_SECONDS:-300}"
 TILE_CONCURRENCY="${RADIAL_TILE_CONCURRENCY:-8}"
 RADAR_ID="${RADIAL_RADAR_ID:-11111111-1111-4111-8111-111111111111}"
@@ -39,6 +39,7 @@ post_json "$API_URL/api/v1/radars" "$radar_json" "$OUTPUT_DIR/radar.json"
 
 job_json=$(jq -n --argjson radar "$radar_json" --argjson resolution "$RESOLUTION_M" '{radars:[$radar],resolution_m:$resolution,effective_earth_k:1.3333333333333333,target_heights_agl_m:[30,50,100]}')
 echo "[3/7] Job SRTM + LOS"
+echo "      Portée ${RANGE_M} m · résolution ${RESOLUTION_M} m"
 post_json "$API_URL/api/v1/jobs" "$job_json" "$OUTPUT_DIR/job-created.json"
 job_id=$(jq -er '.id' "$OUTPUT_DIR/job-created.json")
 deadline=$((SECONDS + TIMEOUT_SECONDS))

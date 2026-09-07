@@ -51,8 +51,8 @@ cargo run -p radar-server
 
 The benchmark imports the production scientific source directly and therefore
 cannot silently diverge into a second LOS implementation. On the development
-machine, one LOS-v2 400 km / 90 m iteration completed in 1.780 s with hash
-`c4138ec3d0639263`; compare performance only with repeated runs on the same CPU.
+machine, one LOS-v3 400 km / 90 m iteration completed in 4.685 s with hash
+`c745593c8dc89448`; compare performance only with repeated runs on the same CPU.
 
 The server listens on `RADAR_BIND` (`0.0.0.0:8100` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
@@ -86,6 +86,10 @@ Avec le serveur accessible sur le port 8100, exécutez :
 ```sh
 RADIAL_API_URL=http://127.0.0.1:8100 scripts/validate-e2e.sh
 ```
+
+Le scénario par défaut utilise une portée de 100 km et une résolution de 30 m,
+afin de valider réellement plusieurs matrices de tuiles. Utilisez explicitement
+`RADIAL_RANGE_M` et `RADIAL_RESOLUTION_M` pour un test rapide plus petit.
 
 Le script attend health/readiness, crée un radar, déclenche le téléchargement
 SRTM et le LOS, attend le job, crée une fusion, télécharge metadata et

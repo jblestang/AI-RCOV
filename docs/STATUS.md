@@ -78,9 +78,9 @@ The WMTS-adjacent sample endpoint returns exact SRTM elevation in metres AMSL
 and minimum detection height in metres AGL for interactive tooltips.
 The dependency-free standalone benchmark now imports the production LOS modules,
 generates minimum heights, merges bitsets, reports geometry/surface/memory/hash,
-and was actually executed at 400 km / 90 m. One local LOS-v2 iteration measured
-1.780 s (44.40 M nominal cells-radar/s), 4,066 ground-visible cells and hash
-`c4138ec3d0639263`; this is an observation, not a universal baseline or claimed
+and was actually executed at 400 km / 90 m. One local LOS-v3 iteration measured
+4.685 s (16.87 M nominal cells-radar/s), 5,076 ground-visible cells and hash
+`c745593c8dc89448`; this is an observation, not a universal baseline or claimed
 speedup.
 The external SRTM path was verified end to end with `N45E002.hgt.gz`: a native
 job downloaded and cached the 11,330,155-byte compressed tile, decoded it,
