@@ -13,11 +13,20 @@ pub fn reduce_2x2(values: [Option<u16>; 4], kind: LayerKind) -> Option<u16> {
     }
 }
 pub fn grayscale_png(values: &[u8]) -> Result<Vec<u8>, image::ImageError> {
-    let mut out = std::io::Cursor::new(Vec::new());
-    let image = image::GrayImage::from_raw(TILE_SIZE as u32, TILE_SIZE as u32, values.to_vec())
-        .expect("tile-sized buffer");
-    image.write_to(&mut out, image::ImageFormat::Png)?;
-    Ok(out.into_inner())
+    use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+    let mut out = Vec::new();
+    PngEncoder::new_with_quality(
+        &mut out,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::NoFilter,
+    )
+    .write_image(
+        values,
+        TILE_SIZE as u32,
+        TILE_SIZE as u32,
+        ExtendedColorType::L8,
+    )?;
+    Ok(out)
 }
 pub fn etag(bytes: &[u8]) -> String {
     format!("\"{}\"", blake3::hash(bytes).to_hex())

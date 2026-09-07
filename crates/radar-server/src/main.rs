@@ -916,6 +916,19 @@ fn atomic_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Err
     drop(f);
     std::fs::rename(tmp, path)
 }
+
+/// Atomically publishes a derived cache entry without forcing it to stable
+/// storage. Unlike scientific artifacts, PNG tiles are safe to regenerate
+/// after a crash, and a per-tile fsync makes full pyramids prohibitively slow.
+fn atomic_cache_bytes(path: &std::path::Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+    use std::io::Write;
+    let tmp = path.with_extension("tmp");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(bytes)?;
+    file.flush()?;
+    drop(file);
+    std::fs::rename(tmp, path)
+}
 async fn wmts_metadata(
     State(s): State<App>,
     Path((dataset, version, date)): Path<(Uuid, u16, String)>,
@@ -1108,7 +1121,7 @@ async fn wmts_tile(
             std::fs::create_dir_all(parent)
                 .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?
         }
-        atomic_bytes(&cache, &generated)
+        atomic_cache_bytes(&cache, &generated)
             .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?;
         generated
     };
