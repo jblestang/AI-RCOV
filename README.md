@@ -57,6 +57,10 @@ machine, one LOS-v3 400 km / 90 m iteration completed in 4.685 s with hash
 The server listens on `RADAR_BIND` (`0.0.0.0:8100` by default). Compile the web
 crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
+The generated preview must be served over HTTP so its elevation requests have
+a constrained browser origin. Run `scripts/serve-validation-preview.sh`, then
+open `http://localhost:5173/preview.html`. Production deployments must set
+`RADAR_CORS_ORIGINS` explicitly.
 
 SRTM downloads are performed only by `radar-server`. Set `RADAR_SRTM_CACHE` to
 a persistent directory (default `data/srtm`); compressed `.hgt.gz` files survive

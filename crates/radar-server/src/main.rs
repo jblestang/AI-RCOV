@@ -1313,8 +1313,9 @@ fn request_id_header() -> HeaderName {
     HeaderName::from_static("x-request-id")
 }
 fn cors_layer() -> CorsLayer {
-    let configured = std::env::var("RADAR_CORS_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:8100,http://localhost:5173".into());
+    let configured = std::env::var("RADAR_CORS_ORIGINS").unwrap_or_else(|_| {
+        "http://127.0.0.1:5173,http://localhost:8100,http://localhost:5173".into()
+    });
     let origins = configured
         .split(',')
         .filter_map(|v| v.trim().parse::<HeaderValue>().ok())
