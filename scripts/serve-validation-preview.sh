@@ -18,4 +18,5 @@ if command -v lsof >/dev/null && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 
 fi
 
 echo "Aperçu: http://localhost:${PORT}/preview.html"
-exec python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$OUTPUT_DIR"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+exec python3 "$SCRIPT_DIR/serve-validation-preview.py" --port "$PORT" --directory "$OUTPUT_DIR"

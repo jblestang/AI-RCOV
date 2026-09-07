@@ -59,8 +59,9 @@ crate with `RADAR_API_URL=https://radar.example`; a runtime override should be
 provided by the hosting shell before production deployment.
 The generated preview must be served over HTTP so its elevation requests have
 a constrained browser origin. Run `scripts/serve-validation-preview.sh`, then
-open `http://localhost:8765/preview.html`. Production deployments must set
-`RADAR_CORS_ORIGINS` explicitly.
+open `http://localhost:8765/preview.html`. The preview server proxies altitude
+samples on the same origin, so a custom preview port needs no CORS change.
+Production deployments must set `RADAR_CORS_ORIGINS` explicitly.
 
 SRTM downloads are performed only by `radar-server`. Set `RADAR_SRTM_CACHE` to
 a persistent directory (default `data/srtm`); compressed `.hgt.gz` files survive
