@@ -58,7 +58,9 @@ are atomically cached by dataset/layer/matrix/row/column.
 Fusion datasets now materialize ground, 30 m, 50 m, 100 m, arbitrary requested
 AGL, radar-count, and best minimum-detection-height products directly from saved
 `.rhgt` files. Boolean/count LOD uses any/max; minimum-height LOD uses min while
-ignoring NoData. GetCapabilities advertises all six standard layers.
+ignoring NoData. Minimum-detection PNGs use an inverse 0–5,000 m AGL ramp: low
+required heights are bright, high required heights are dark, and black is
+reserved for NoData. GetCapabilities advertises all six standard layers.
 `GET /api/v1/profiles/{radar_id}` builds a server-side terrain transect and
 returns cumulative distance, raw/apparent terrain, LOS line, horizon, requested
 target height, obstruction flags, vertical margin, first obstacle and final

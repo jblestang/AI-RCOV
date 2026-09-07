@@ -32,6 +32,8 @@ use tower_http::{
 use uuid::Uuid;
 const DEFAULT_MAX_RADARS: usize = 32;
 const DEFAULT_MAX_CELLS: u64 = 100_000_000;
+const MINIMUM_HEIGHT_RENDER_MAX_M: u16 = 5_000;
+const MINIMUM_HEIGHT_TILE_CACHE_VERSION: u8 = 2;
 #[derive(Clone)]
 struct JobRecord {
     status: JobStatus,
@@ -1095,8 +1097,14 @@ async fn wmts_tile(
         return Err(public_error(StatusCode::NOT_FOUND, "tile outside matrix"));
     }
     let source = layer_source(&layer)?;
+    let minimum = layer == "min-detection-height";
+    let cache_root = if minimum {
+        format!("tiles-minimum-v{MINIMUM_HEIGHT_TILE_CACHE_VERSION}")
+    } else {
+        "tiles".to_owned()
+    };
     let cache = dir
-        .join("tiles")
+        .join(cache_root)
         .join(&layer)
         .join(z.to_string())
         .join(row.to_string())
@@ -1106,7 +1114,6 @@ async fn wmts_tile(
             .map_err(|_| public_error(StatusCode::INTERNAL_SERVER_ERROR, "tile cache failed"))?
     } else {
         let path = dir.join(source);
-        let minimum = layer == "min-detection-height";
         let generated = tokio::task::spawn_blocking(move || {
             if minimum {
                 render_minimum_tile(&path, width, height, factor, row as usize, col as usize)
@@ -1261,11 +1268,20 @@ fn render_minimum_tile(
         }
         for (tx, value) in minimum.iter().enumerate() {
             if *value != u16::MAX {
-                output[ty * TILE_SIZE + tx] = (*value / 257) as u8;
+                output[ty * TILE_SIZE + tx] = minimum_height_intensity(*value);
             }
         }
     }
     grayscale_png(&output).map_err(std::io::Error::other)
+}
+
+fn minimum_height_intensity(value: u16) -> u8 {
+    if value == u16::MAX {
+        return 0;
+    }
+    let bounded = value.min(MINIMUM_HEIGHT_RENDER_MAX_M) as u32;
+    let maximum = u32::from(MINIMUM_HEIGHT_RENDER_MAX_M);
+    (1 + (maximum - bounded) * 254 / maximum) as u8
 }
 fn response_bytes(
     status: StatusCode,
@@ -1393,6 +1409,15 @@ mod tests {
         let png = render_count_tile(&path, 3, 3, 2, 0, 0).unwrap();
         assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
         std::fs::remove_file(path).unwrap()
+    }
+    #[test]
+    fn minimum_height_render_is_visible_and_monotonic() {
+        assert_eq!(minimum_height_intensity(u16::MAX), 0);
+        assert_eq!(minimum_height_intensity(0), 255);
+        assert!(minimum_height_intensity(42) > minimum_height_intensity(950));
+        assert!(minimum_height_intensity(950) > minimum_height_intensity(5_000));
+        assert_eq!(minimum_height_intensity(5_000), 1);
+        assert_eq!(minimum_height_intensity(60_000), 1);
     }
     #[test]
     fn xml_values_are_escaped() {
