@@ -21,7 +21,10 @@ use std::{
         Arc,
     },
 };
-use terrain_srtm::{tiles_for_radius, LocalProjection, MetricRaster, SrtmCache, SrtmCacheConfig};
+use terrain_srtm::{
+    tiles_for_radius, LocalProjection, MetricRaster, SrtmCache, SrtmCacheConfig,
+    TERRAIN_MODEL_VERSION,
+};
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tower_http::{
     cors::{AllowOrigin, CorsLayer},
@@ -362,6 +365,7 @@ async fn execute_job(
         let radar_y = ((bounds[3] - radar_y_m) / resolution).round() as usize;
         let config_json = serde_json::to_vec(&serde_json::json!({
             "los_algorithm_version": LOS_ALGORITHM_VERSION,
+            "terrain_model_version": TERRAIN_MODEL_VERSION,
             "radar": radar,
             "resolution_m": request.resolution_m,
             "effective_earth_k": request.effective_earth_k,
@@ -749,6 +753,7 @@ fn job_request_hash(request: &JobRequest) -> Result<String, serde_json::Error> {
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"radial-los-job");
         hasher.update(&LOS_ALGORITHM_VERSION.to_le_bytes());
+        hasher.update(&TERRAIN_MODEL_VERSION.to_le_bytes());
         hasher.update(&bytes);
         hasher.finalize().to_hex().to_string()
     })

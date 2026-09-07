@@ -4,6 +4,8 @@ mod projection;
 pub use cache::{SrtmCache, SrtmCacheConfig};
 pub use projection::{LocalProjection, MetricRaster};
 pub const VOID: i16 = -32768;
+/// Surface-height semantics used by LOS and persistent terrain fingerprints.
+pub const TERRAIN_MODEL_VERSION: u16 = 2;
 const EARTH_RADIUS_M: f64 = 6_371_000.0;
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct TileCoordinate {
@@ -168,12 +170,17 @@ impl TerrainMosaic {
         let scale = (tile.dimension - 1) as f64;
         let row = ((1.0 - (latitude - f64::from(lat_tile))) * scale).round() as usize;
         let col = ((longitude - f64::from(lon_tile)) * scale).round() as usize;
-        Ok(tile.sample(row.min(tile.dimension - 1), col.min(tile.dimension - 1)))
+        // Skadi includes bathymetry in ocean cells. A terrestrial viewshed
+        // follows the water surface, not the sea floor.
+        Ok(tile
+            .sample(row.min(tile.dimension - 1), col.min(tile.dimension - 1))
+            .map(|height| height.max(0)))
     }
     /// Deterministic hash of tile coordinates, dimensions and every decoded
     /// elevation sample. Tile order is stable because the mosaic uses BTreeMap.
     pub fn content_hash(&self) -> String {
         let mut hash = blake3::Hasher::new();
+        hash.update(&TERRAIN_MODEL_VERSION.to_le_bytes());
         for (coordinate, tile) in &self.tiles {
             hash.update(&coordinate.lat.to_le_bytes());
             hash.update(&coordinate.lon.to_le_bytes());
@@ -247,5 +254,18 @@ mod tests {
         })]);
         assert_ne!(a.content_hash(), b.content_hash());
         assert_eq!(a.content_hash(), a.content_hash());
+    }
+
+    #[test]
+    fn bathymetry_is_clamped_to_water_surface() {
+        let coordinate = TileCoordinate { lat: 0, lon: 0 };
+        let mut heights = vec![10; 1201 * 1201];
+        heights[600 * 1201 + 600] = -1763;
+        let mosaic = TerrainMosaic::new([Arc::new(HgtTile {
+            coordinate,
+            dimension: 1201,
+            heights,
+        })]);
+        assert_eq!(mosaic.sample(0.5, 0.5).unwrap(), Some(0));
     }
 }
