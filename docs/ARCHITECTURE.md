@@ -32,3 +32,8 @@ all hot LOS loops subsequently use integer indices and metre resolution.
 For lower WMTS levels, boolean and radar-count layers use `max` (`any` for
 boolean); minimum-height uses `min` while ignoring NoData. Source resolution is
 the maximum level. Edge samples outside odd-sized matrices are NoData.
+
+## Architecture Decision Records (ADR)
+
+Historical and ongoing architectural decisions (and the rationale behind them) are documented using MADR in [`docs/adr/`](adr/README.md). See [ADR-0001](adr/0001-record-architecture-decisions.md) for details on the ADR process.
+

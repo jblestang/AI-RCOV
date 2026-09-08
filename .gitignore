@@ -4,3 +4,11 @@
 *.tmp
 .DS_Store
 
+# test data 
+*.jsonl
+*.rhgt
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+/validation-output/*

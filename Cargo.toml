@@ -8,6 +8,7 @@ members = [
   "crates/radar-wmts",
   "crates/radar-server",
   "crates/radar-web",
+  "crates/coverage-h3",
 ]
 
 [workspace.package]
