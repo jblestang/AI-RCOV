@@ -10,34 +10,42 @@ Pour plus de détails sur les choix d'architecture, voir [ADR-0002](../../docs/a
 
 ---
 
-## Compilation
+## Binaires Disponibles
 
-Compilez le binaire CLI d'exportation et de benchmark en mode Release :
-
-```bash
-cargo build --release -p coverage-h3 --bin h3_export
-```
-
-L'exécutable se trouvera sous :
-- Linux / macOS : `./target/release/h3_export`
-- Windows : `./target/release/h3_export.exe`
+Le package fournit deux binaires distincts :
+1. **`h3_export`** : Le binaire **production** épuré, dédié exclusivement à la conversion de fichiers `.rhgt` réels vers un flux `.jsonl` (aucune logique de benchmark embarquée).
+2. **`h3_bench`** : Le binaire de **benchmark autonome**, dédié aux mesures de performance et stress-tests sur grille synthétique.
 
 ---
 
-## Quickstart : Exporter un fichier `.rhgt` réel
+## Compilation
 
-### 1. Export vers un fichier `.jsonl`
+Compilez les binaires en mode Release :
 
 ```bash
-# Export avec résolution H3 = 7 par défaut et pas d'altitude de 100 m
-./target/release/h3_export.exe data/results/radar.rhgt export.jsonl --res 7 --bucket 100
+# Binaire de production (conversion)
+cargo build --release -p coverage-h3 --bin h3_export
+
+# Binaire de benchmark (optionnel)
+cargo build --release -p coverage-h3 --bin h3_bench
+```
+
+---
+
+## Quickstart Production (`h3_export`)
+
+### 1. Export d'un fichier `.rhgt` vers un fichier `.jsonl`
+
+```bash
+# Export avec résolution H3 = 7 par défaut et quantification par pas de 100 m
+./target/release/h3_export data/results/radar.rhgt export.jsonl --res 7 --bucket 100
 ```
 
 ### 2. Streaming direct vers la sortie standard (stdout)
 
 ```bash
-# Aperçu des 5 premières lignes
-./target/release/h3_export.exe data/results/radar.rhgt --res 7 | head -n 5
+# Afficher les 5 premières cellules générées
+./target/release/h3_export data/results/radar.rhgt --res 7 | head -n 5
 ```
 
 ### 3. Exemple de sortie JSONL générée
@@ -62,50 +70,31 @@ Chaque ligne est un objet JSON compact conforme GeoJSON (RFC 7946) :
 }
 ```
 
----
-
-## Lancer les Benchmarks
-
-Le binaire intègre un mode `--bench` autonome générant un volume de données synthétique représentatif de la production avec relief et ombres de masque.
-
-### 1. Benchmark Standard (400 km / 90 m — 79 millions de pixels, Res 7)
-
-```bash
-./target/release/h3_export.exe --bench --res 7 --cell 90 --range 400000
-```
-
-Exemple de métriques obtenues :
-- **Volume** : 8891 × 8891 (~79 Mpx, 55 Mpx visibles)
-- **Temps médian** : ~1.55 s
-- **Débit raster** : ~51 Mpx / s
-- **Débit d'exportation** : ~57 000 cellules H3 / s (88 874 cellules exportées)
-
-### 2. Benchmark Haute Résolution (200 km / 180 m — Res 8)
-
-```bash
-./target/release/h3_export.exe --bench --res 8 --cell 180 --range 200000
-```
-
-Exemple de métriques obtenues :
-- **Volume** : 2225 × 2225 (5 Mpx)
-- **Temps médian** : ~0.17 s
-- **Débit d'exportation** : ~907 000 cellules H3 / s (156 492 cellules exportées)
-
----
-
-## Options de la Ligne de Commande
+### 4. Options de la Ligne de Commande (`h3_export`)
 
 | Option | Défaut | Description |
 | :--- | :---: | :--- |
 | `<input.rhgt>` | *(requis)* | Chemin du fichier binaire `.rhgt` en entrée. |
 | `[output.jsonl]` | `stdout` | Chemin du fichier `.jsonl` en sortie. |
-| `--bench` | `false` | Active le mode benchmark avec raster synthétique. |
 | `--res <0-15>` | `7` | Résolution H3 cible (ex: 6, 7, 8, 9). |
 | `--start-res <0-15>` | `5` | Résolution de départ pour l'élagage hiérarchique. |
 | `--bucket <m>` | *(aucun)* | Quantifie l'altitude en tranches de $N$ mètres. |
 | `--no-boundary` | `false` | N'exporte pas le tableau `boundary` (fichier plus léger). |
-| `--cell <m>` | `90` | Taille de cellule en mètres (mode `--bench`). |
-| `--range <m>` | `400000` | Portée radar en mètres (mode `--bench`). |
+| `-q`, `--quiet` | `false` | Désactive les logs d'avancement sur stderr. |
+
+---
+
+## Outil de Benchmark (`h3_bench`)
+
+Pour reproduire les benchmarks de performance sur grille synthétique :
+
+```bash
+# Benchmark Standard (400 km / 90 m — 79 millions de pixels, Res 7)
+./target/release/h3_bench --res 7 --cell 90 --range 400000
+
+# Benchmark Haute Résolution (200 km / 180 m — Res 8)
+./target/release/h3_bench --res 8 --cell 180 --range 200000
+```
 
 ---
 
