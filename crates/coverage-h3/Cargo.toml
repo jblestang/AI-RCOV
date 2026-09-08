@@ -1,0 +1,15 @@
+[package]
+name = "coverage-h3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+coverage-storage = { path = "../coverage-storage" }
+terrain-srtm = { path = "../terrain-srtm" }
+h3o = "0.8"
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

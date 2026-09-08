@@ -5,6 +5,7 @@ This directory contains the **Architecture Decision Records (ADR)** for the `AI-
 ## Index of Decisions
 
 * [ADR-0001: Record Architecture Decisions with Markdown Architectural Decision Records (MADR)](./0001-record-architecture-decisions.md)
+* [ADR-0002: Hierarchical H3 Hexagonal Cell Export from Native Coverage Grids](./0002-h3-hierarchical-coverage-export.md)
 
 ---
 
